@@ -1,0 +1,340 @@
+# gemini-review — DH 本体への独立 Gemini レビュアー
+#
+# Copilot review (GitHub 標準) に加えて Gemini を独立レビュアーとして併走させる。
+# v5.5.0 PR #34 で Copilot review が 11 件の semantic 問題を捕捉した実績を踏まえ、
+# 多層防御（Reason Swiss Cheese model 同型）の追加層として配置する。
+#
+# Anthropic claude-code-action（PR #36 で検討、Anthropic API 課金）に対し、
+# Google Gemini API は無料 tier（Google AI Studio）が提供されるため本 PR では Gemini を採用。
+# 最新の rate limit / quota は公式ドキュメントを参照:
+# https://ai.google.dev/gemini-api/docs/rate-limits
+# (本ファイル記載の数値は as of 2026-05、参考値として扱うこと。Google 側変更で陳腐化し得る)
+#
+# モデルは gemini-2.5-pro を明示指定（v5.5.1 で flash → pro 昇格）:
+# - **昇格理由**: PR #40 run 25269847621 stdout.log で flash の tool-calling
+#   hallucination が確定（"stats.tools.totalCalls": 0、code block 内に
+#   `print(mcp_github_pull_request_read(...))` を text 出力するだけで実 invoke なし）
+#   3 LLM round-trip にわたって narrative で「これから call する」と書き続け終了
+# - PR #38 で flash に pin した「コスト予測性」前提は tool-calling 不安定により崩壊
+#   （tool が呼べないなら quota 余裕も意味をなさない）
+# - Pro 無料 tier RPD: 100 RPD（DH PR 量 < 5 PR/日に対して大幅な余裕、利用率 5%）
+# - Pro は MCP tool 呼び出しが flash より大幅に堅牢（公式 + 観測実績）
+# - gemini-cli のデフォルト変動でモデルが勝手に切り替わるのを防ぐ点は維持（明示指定）
+#
+# 旧 flash 採用根拠（参考、v5.5.1 で否定された）:
+# - flash 1,500 RPD の余裕 → 採用しない（quota 余裕より tool-calling 動作が先）
+# - DH レビュー用途は flash で品質十分 → 否定（tool-calling 不能で品質ゼロ）
+#
+# Generator/Evaluator 同一化アンチパターンへの構造的対処:
+# - DH 本体 PR の多くは Claude (Anthropic) で書かれる
+# - Gemini (Google) は完全に異質なモデル → 真の独立観測機構として機能
+# - 同 vendor self-similar bias を構造的に排除
+#
+# 配布対象: dialog-harness リポジトリ自身のみ。利用者プロジェクトには配布されない。
+# 利用者プロジェクト向け template 化は別途検討（v5.5.x or v5.6.0 候補）。
+#
+# 必要な setup:
+# - Repo Settings → Secrets and variables → Actions に GEMINI_API_KEY を設定
+#   （Google AI Studio https://aistudio.google.com/ で無料発行、課金カード不要）
+# - 任意: branch protection の required status check に追加（推奨は決定論検査のみ必須化）
+
+name: gemini-review
+
+# モデル名を一元管理（Copilot review #38 line 110、重複定義の乖離リスク回避）
+# action input と settings JSON の両方が同じ値を参照する
+env:
+  GEMINI_MODEL: gemini-2.5-pro
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize, reopened]
+    paths:
+      - ".claude/skills/**"
+      - "harness-verifier/**"
+      - "history/**"
+      - "delivery/**"
+      - "templates/**"
+      - "dh-upgrades/**"
+
+# 同一 PR の再起動時は前回ジョブをキャンセル（コスト効率 + 最新 commit 反映）
+concurrency:
+  group: "gemini-review-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # draft PR / bot 作者の PR はスキップ
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'github-actions[bot]' &&
+      github.event.pull_request.user.login != 'copilot-pull-request-reviewer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Least privilege: gemini_api_key 認証のため id-token は不要（Copilot review #37 line 56）
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        # SHA pin 推奨（Copilot review #37 line 90、supply-chain hardening）
+        # tag のまま運用は許容、deployment 時に maintainer が SHA pin することを推奨
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # full clone（v5.5.1）。gemini-cli が内部で diff 計算を試みた場合の
+          # shallow clone (default depth=1) 起因の silent fail を排除する
+          fetch-depth: 0
+
+      # GEMINI_API_KEY が設定されているか早期チェック（Copilot review #37 line 75）
+      # secrets は if 式で直接参照できないため env 経由で空文字判定する
+      # fork PR では secrets が渡されないので skip により noisy red CI を防ぐ
+      - name: Check GEMINI_API_KEY availability
+        id: check_key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::notice::GEMINI_API_KEY secret 未設定または空。gemini-review をスキップします（fork PR では正常な挙動）。"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # GH_REVIEW_PAT が設定されているか早期チェック（v5.5.2 Copilot review #41 line 121）
+      # v5.5.2 で continue-on-error: true を削除したため、PAT 未設定で MCP server に空 token を
+      # 渡す → review_write が「Resource not accessible」で fail → job が hard-fail red になる。
+      # GEMINI_API_KEY と同形式の早期チェックでクリーンに skip する
+      - name: Check GH_REVIEW_PAT availability
+        id: check_pat
+        env:
+          GH_REVIEW_PAT: ${{ secrets.GH_REVIEW_PAT }}
+        run: |
+          if [ -z "$GH_REVIEW_PAT" ]; then
+            echo "::notice::GH_REVIEW_PAT secret 未設定または空。gemini-review をスキップします（review_write には Pull requests: Write 権限の PAT が必要）。"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # v5.10.0 (Issue #49 軸 D): self-PR 検出を workflow 側で構造化
+      # PR author == GH_REVIEW_PAT オーナーが同一の場合、APPROVE は GitHub API で拒否される
+      # (Cannot approve your own pull request)。従来 prompt 内 fallback だったが、API 一発で
+      # 判別できる情報を workflow 側で先取りして prompt に渡す。
+      - name: Detect self-PR (v5.10.0, Issue #49 軸 D)
+        id: detect_self_pr
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_REVIEW_PAT }}
+        run: |
+          set -euo pipefail
+          PR_AUTHOR='${{ github.event.pull_request.user.login }}'
+          PAT_OWNER=$(gh api /user --jq '.login' 2>/dev/null || echo "")
+          if [ -z "$PAT_OWNER" ]; then
+            echo "::notice::PAT owner 取得失敗（PAT 権限不足の可能性）。self-PR 判定不能、prompt 側 fallback に委譲"
+            echo "is_self_pr=unknown" >> "$GITHUB_OUTPUT"
+          elif [ "$PR_AUTHOR" = "$PAT_OWNER" ]; then
+            echo "::notice::self-PR 検出: PR author '$PR_AUTHOR' == PAT owner '$PAT_OWNER'。COMMENT only に誘導"
+            echo "is_self_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::非 self-PR: PR author '$PR_AUTHOR' != PAT owner '$PAT_OWNER'。APPROVE 可能"
+            echo "is_self_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # v5.10.0 (Issue #49 軸 C, A1): 必須コンテキストファイルを事前注入
+      # gemini-cli が MCP 経由で取りに行く構造を廃止し、workflow が事前にファイルを集約。
+      # gemini が直接 read できる場所 (.gemini-context/required.md) に置く。
+      # ファイル不存在は skip (利用者プロジェクトへの汎用性確保)
+      - name: Inject required context files (v5.10.0, Issue #49 軸 C)
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .gemini-context
+          {
+            echo "# 必須コンテキストファイル (workflow 事前注入、v5.10.0)"
+            echo ""
+            echo "本ファイルは gemini-review.yml が PR レビュー前に集約。MCP 経由の取得を不要にし、レビュー精度を向上させる。"
+            echo ""
+          } > .gemini-context/required.md
+          for f in SPEC.md DONT.md .claude/skills/layer0-spec-architect/references/philosophy.md; do
+            if [ -f "$f" ]; then
+              {
+                echo "## $f"
+                echo ""
+                echo '```markdown'
+                cat "$f"
+                echo '```'
+                echo ""
+              } >> .gemini-context/required.md
+              echo "::notice::Injected: $f"
+            else
+              echo "::notice::Skipped (not found): $f"
+            fi
+          done
+
+      # google-github-actions/run-gemini-cli 公式 action
+      # 公式: https://github.com/google-github-actions/run-gemini-cli
+      # 無料 tier 動作可（Google AI Studio API key）
+      # SHA pin 推奨（Copilot review #37 line 90）が、本 commit では @v0 タグのまま。
+      # deployment 時に maintainer が `pinact` 等で SHA pin することを推奨
+      - name: Run Gemini PR review
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub MCP server には Fine-grained PAT (GH_REVIEW_PAT) を渡す。
+          # 自動の secrets.GITHUB_TOKEN（ghs_* GitHub Apps token）は v5.5.1 PR #40 の
+          # diagnostic 旅程で write 操作不可と判明（実際は read 404 由来だが切り分け
+          # 過程で PAT 切替を実装、結果として PAT 構成が標準）。
+          # PAT 必要権限: Pull requests: Read+Write, Contents: Read, Metadata: Read（自動）
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_REVIEW_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          # モデルは workflow level env.GEMINI_MODEL から参照（単一情報源、本ファイル冒頭コメント参照）
+          gemini_model: ${{ env.GEMINI_MODEL }}
+          github_pr_number: ${{ github.event.pull_request.number }}
+          # v5.10.0 (Issue #49 軸 B, F1-F3): tool exposure 適正化
+          # `includeTools` で read 系 + review-related write のみに絞り込み、destructive tool
+          # (merge_pull_request / close / delete_file 等) を除外。
+          # 注: tool 名は github-mcp-server v0.27.0 の MCP tool 命名に従う。tool 名は server
+          # により若干異なる可能性があるため、設定後に gemini-artifacts/ で実際の expose 状況を
+          # 観測して調整する想定。
+          settings: |
+            {
+              "model": {
+                "name": "${{ env.GEMINI_MODEL }}",
+                "maxSessionTurns": 25
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run",
+                    "-i",
+                    "--rm",
+                    "-e",
+                    "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+                  },
+                  "includeTools": [
+                    "pull_request_read",
+                    "get_file_contents",
+                    "search_code",
+                    "list_files",
+                    "add_comment_to_pending_review",
+                    "pull_request_review_write"
+                  ]
+                }
+              }
+            }
+          prompt: |
+            あなたは dialog-harness 本体への **プロジェクト固有仕様軸の独立レビュアー** です。
+            Copilot review が汎用コードレビュー（コードスタイル / lint / 命名 / 汎用 smell）を
+            担当するため、本レビュアーは視点を直交させ **DH の SPEC / philosophy / 横断契約** 軸のみに集中します。
+
+            ## レビュー対象
+
+            - **対象 repository**: `samejima-ai/dialog-harness`
+            - **対象 PR 番号**: **#${{ github.event.pull_request.number }}**
+            - **head SHA**: `${{ github.event.pull_request.head.sha }}`
+            - **base branch**: `${{ github.event.pull_request.base.ref }}`
+            - **head branch**: `${{ github.event.pull_request.head.ref }}`
+
+            PR 番号は確定済（人間に質問しない）。最初に `pull_request_read` で diff / files / 既存 review を取得。
+
+            ## 必須コンテキスト（workflow 事前注入）
+
+            workflow が `.gemini-context/required.md` に SPEC.md / DONT.md / philosophy.md を集約済み。
+            **MCP より先に bash で直接読む**:
+
+            ```bash
+            cat .gemini-context/required.md
+            ```
+
+            不存在時は MCP で `.claude/skills/layer0-spec-architect/references/philosophy.md` 等を取得。
+
+            ## self-PR ハンドリング（workflow 構造化済）
+
+            - `IS_SELF_PR=${{ steps.detect_self_pr.outputs.is_self_pr }}`
+              - `true`: 最初から event="COMMENT"
+              - `false`: APPROVE / COMMENT / REQUEST_CHANGES のいずれか
+              - `unknown`: API 応答で fallback 判別
+
+            ## 視点直交の原則（最重要）
+
+            本レビュアーが **対象としない** 領域（Copilot 担当）:
+
+            - 一般的なコードスタイル / 命名 convention / lint / format
+            - 汎用的な code smell / セキュリティ標準パターン
+            - 言語/FW のイディオム
+            - typo / 自然文の表記揺れ（schema 厳密性に該当する場合を除く）
+
+            本レビュアーが **対象とする** 領域（プロジェクト固有仕様軸）:
+
+            - **DH 哲学整合性**: `philosophy.md` 6 条憲法（フラクタル / 情報純度 / 献上哲学 / 人間 ≒ Council 等）
+            - **SPEC / I/O 契約**: SPEC.md / DONT.md / dev-env-spec / handoff-to-evaluator の契約整合
+            - **Council 起動側品質**: pre-check の category 分類、consensus-protocol の値域、`judgment_confidence < 0.5` 時の `escalated` 必須
+            - **Cross-file 契約整合**: 複数 SKILL.md 間の AND 結合判定、許可リスト整合
+            - **履歴記述の事実整合**: CHANGELOG `(in progress)/(released)`、provenance、file count の三者一致
+            - **harness-verifier 整合**: `python harness-verifier/verify.py --strict` の 5 検査前提
+            - **schema 厳密性**: COUNCIL-LOG / glossary.yml / frontmatter 必須フィールド
+
+            汎用 code review で Copilot が拾える問題は **指摘しない**。視点が直交していることが本レビューの存在意義。
+
+            ## 出力形式（厳密、余分な出力禁止）
+
+            最終 verdict は `pull_request_review_write` で投稿。body は以下の構造のみ:
+
+            ### 問題なしの場合
+
+            ```
+            問題: なし
+            ```
+
+            event は APPROVE（`IS_SELF_PR=true` 時は COMMENT）。
+
+            ### 問題ありの場合
+
+            ```
+            問題: あり (N 件)
+
+            ### 1. <問題点を 1〜2 行で>
+            参照: https://github.com/samejima-ai/dialog-harness/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+
+            ### 2. <問題点を 1〜2 行で>
+            参照: https://github.com/samejima-ai/dialog-harness/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+            ```
+
+            - permalink は head SHA 固定（行番号が後の commit でずれない）
+            - 行番号は `#L<n>` または `#L<start>-L<end>`
+            - 各問題は 1 件 1 ブロック、問題点は簡潔に
+            - 前置き / 心構え / 自己紹介 / 推論過程は **書かない**
+            - line comment（`add_comment_to_pending_review`）は使用しない（単一 verdict body に集約）
+
+            event は REQUEST_CHANGES または COMMENT。
+
+            ## 必須実行プロトコル
+
+            - 最後に必ず `pull_request_review_write` で verdict を確定
+            - tool 呼び出しなしで完了することは禁止
+            - tool 失敗時は最終応答にその旨を明示
+
+      # gemini-artifacts/ を明示的に Actions Artifacts として upload。
+      # action 内部の `cp ... gemini-artifacts/...` だけでは job 終了時にディスクから消えるため、
+      # 外部 step で upload して将来 debug 必要時に download 可能にする（low cost で有用性高い）
+      - name: Upload gemini-artifacts (stdout / stderr / telemetry)
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-artifacts-pr-${{ github.event.pull_request.number }}-run-${{ github.run_id }}
+          path: |
+            gemini-artifacts/
+            .gemini/
+          if-no-files-found: warn
+          retention-days: 7

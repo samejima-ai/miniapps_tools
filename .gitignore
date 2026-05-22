@@ -1,0 +1,46 @@
+# dialog-harness is a skill-only repository.
+# This .gitignore exists as a guardrail to prevent non-skill artifacts
+# from being accidentally committed. See PR restoring this file for rationale.
+
+# Claude Code local machine settings (never shared)
+.claude/settings.local.json
+
+# Local-only design drafts / scratch docs (skill-only policy: PR #3)
+# v5.0.0 例外: 配布対象の migration guide は許可（spec §5.4.2、AD-007 参照）
+# v5.1.0 fix: AD-007 の意図通り migration-guide を tracked にするため
+# `docs/` から `docs/*` へ変更（git のディレクトリ ignore は子の re-include を許可しないため）
+docs/*
+!docs/migration-guide-*.md
+drafts/
+scratch/
+
+# crosscut-council skill: 検証ワークスペース（subagent 出力の実データ。再現不能だが skill 本体ではない）
+.claude/skills/crosscut-council-workspace/
+
+# Walking skeleton iteration-1 検証データ（PR #11 期、council/ → crosscut-council/ rename 前の旧名）
+# subagent 出力の実データ。再現不能。2026-10 頃に保持要否を再評価
+# （Council 判断 council-2026-04-30T03:50:00Z-cln1k7、哲学者 minority を統合）
+.claude/skills/council-workspace/
+
+# Sandbox: skill library の外側で動作検証用に組み立てた試作アプリ群
+# （council テスト等の一時プロジェクトを配置。skill 本体ではない）
+sandbox/
+
+# crosscut-council skill: ブリーフ原稿は design-history.md に要約転記済み（design-history.md §17: 本体に内包しない）
+Council system dev brief .md
+
+# Python cache (harness-verifier ランタイム生成物、v5.2.0 追加)
+__pycache__/
+*.pyc
+*.pyo
+
+# .gemini/ runtime artifacts (issue-pickup workflow が実行時に生成する統計ファイル等)
+# v5.8.0 PR #50 review feedback で repo にコミット不適切と確定（ブランチ間競合リスク）
+.gemini/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
