@@ -24,11 +24,11 @@ export const ItemCategory = z.enum(["tool", "material", "consumable"]);
 export type ItemCategory = z.infer<typeof ItemCategory>;
 
 export const MovementType = z.enum([
-  "checkout",  // 倉庫→現場（持出）
-  "return",    // 現場→倉庫（返却）
-  "transfer",  // 現場→現場（将来）
-  "inbound",   // 入庫（将来資材）
-  "outbound",  // 出庫（消費・廃棄）
+  "checkout", // 倉庫→現場（持出）
+  "return", // 現場→倉庫（返却）
+  "transfer", // 現場→現場（将来）
+  "inbound", // 入庫（将来資材）
+  "outbound", // 出庫（消費・廃棄）
 ]);
 export type MovementType = z.infer<typeof MovementType>;
 
@@ -66,7 +66,7 @@ export const Location = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
   kind: LocationKind.default("warehouse"),
-  projectId: z.string().uuid().nullable(),  // 現場時、platform.projects(id) を疎結合参照
+  projectId: z.string().uuid().nullable(), // 現場時、platform.projects(id) を疎結合参照
   isActive: z.boolean().default(true),
   createdAt: z.string().datetime(),
 });
@@ -85,28 +85,28 @@ export type Location = z.infer<typeof Location>;
  *
  * DBレベルでは CHECK 制約で担保される。Zod 側では refine で検証。
  */
-export const ItemMovement = z.object({
-  id: z.string().uuid(),
-  itemId: z.string().uuid(),
-  unitId: z.string().uuid().nullable(),
-  quantity: z.number().int().nullable(),
-  movementType: MovementType,
-  fromLocationId: z.string().uuid().nullable(),
-  toLocationId: z.string().uuid().nullable(),
-  projectId: z.string().uuid().nullable(),  // 現場（platform.projects と疎結合）
-  holderId: z.string().uuid().nullable(),   // 実際の保持者（platform.employees(id) と疎結合）
-  movedBy: z.string().uuid().nullable(),    // 入力者（同上）
-  movedAt: z.string().datetime(),
-  source: z.string().default("caaf"),
-  confidence: z.number().min(0).max(1).nullable(),  // ログ用途、状態判定には使わない (D-3)
-  notes: z.string().nullable(),
-  createdAt: z.string().datetime(),
-}).refine(
-  (m) =>
-    (m.unitId !== null && m.quantity === null) ||
-    (m.unitId === null && m.quantity !== null),
-  { message: "individual/quantity 排他制約違反: unitId と quantity は片方のみ必須" },
-);
+export const ItemMovement = z
+  .object({
+    id: z.string().uuid(),
+    itemId: z.string().uuid(),
+    unitId: z.string().uuid().nullable(),
+    quantity: z.number().int().nullable(),
+    movementType: MovementType,
+    fromLocationId: z.string().uuid().nullable(),
+    toLocationId: z.string().uuid().nullable(),
+    projectId: z.string().uuid().nullable(), // 現場（platform.projects と疎結合）
+    holderId: z.string().uuid().nullable(), // 実際の保持者（platform.employees(id) と疎結合）
+    movedBy: z.string().uuid().nullable(), // 入力者（同上）
+    movedAt: z.string().datetime(),
+    source: z.string().default("caaf"),
+    confidence: z.number().min(0).max(1).nullable(), // ログ用途、状態判定には使わない (D-3)
+    notes: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .refine(
+    (m) => (m.unitId !== null && m.quantity === null) || (m.unitId === null && m.quantity !== null),
+    { message: "individual/quantity 排他制約違反: unitId と quantity は片方のみ必須" },
+  );
 export type ItemMovement = z.infer<typeof ItemMovement>;
 
 // ============================================================================
@@ -122,7 +122,7 @@ export const UnitCurrentStatus = z.object({
   itemId: z.string().uuid(),
   itemName: z.string(),
   unitNumber: z.number().int().positive(),
-  currentStatus: z.enum(["in", "out"]),  // movement_type から導出
+  currentStatus: z.enum(["in", "out"]), // movement_type から導出
   currentProjectId: z.string().uuid().nullable(),
   currentHolderId: z.string().uuid().nullable(),
   lastMovedAt: z.string().datetime().nullable(),
@@ -198,7 +198,7 @@ export type Signal = z.infer<typeof Signal>;
  * Platform 統合時に platform.employees(id) へ参照差替えする。
  */
 export const Employee = z.object({
-  id: z.string().uuid(),  // Supabase Auth user_id（将来 platform.employees.id）
+  id: z.string().uuid(), // Supabase Auth user_id（将来 platform.employees.id）
   name: z.string(),
 });
 export type Employee = z.infer<typeof Employee>;

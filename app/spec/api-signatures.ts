@@ -8,15 +8,15 @@
  */
 
 import type {
-  Item,
-  IndividualUnit,
-  Location,
-  ItemMovement,
-  CurrentlyOut,
-  UnitCurrentStatus,
   CaaFExtractionResult,
+  CurrentlyOut,
   Employee,
+  IndividualUnit,
+  Item,
+  ItemMovement,
+  Location,
   MovementType,
+  UnitCurrentStatus,
 } from "./domain";
 
 // ============================================================================
@@ -26,8 +26,8 @@ import type {
 export type LlmProvider = "gemini-flash-lite" | "claude-api";
 
 export interface LlmRouterOptions {
-  provider?: LlmProvider;       // 未指定時は env から決定
-  timeoutMs?: number;            // デフォルト 5000 (UX Must 閾値 p95 5秒)
+  provider?: LlmProvider; // 未指定時は env から決定
+  timeoutMs?: number; // デフォルト 5000 (UX Must 閾値 p95 5秒)
 }
 
 /**
@@ -57,11 +57,18 @@ export type UpdateItem = (
   patch: Partial<Pick<Item, "name" | "category" | "isActive" | "notes" | "itemCode">>,
 ) => Promise<Item>;
 
-export type ListUnits = (itemId: string, opts?: { isActive?: boolean }) => Promise<IndividualUnit[]>;
+export type ListUnits = (
+  itemId: string,
+  opts?: { isActive?: boolean },
+) => Promise<IndividualUnit[]>;
 
-export type CreateUnit = (input: Omit<IndividualUnit, "id" | "createdAt">) => Promise<IndividualUnit>;
+export type CreateUnit = (
+  input: Omit<IndividualUnit, "id" | "createdAt">,
+) => Promise<IndividualUnit>;
 
-export type ListLocations = (opts?: { kind?: Location["kind"]; isActive?: boolean }) => Promise<Location[]>;
+export type ListLocations = (opts?: { kind?: Location["kind"]; isActive?: boolean }) => Promise<
+  Location[]
+>;
 
 export type CreateLocation = (input: Omit<Location, "id" | "createdAt">) => Promise<Location>;
 
@@ -126,7 +133,7 @@ export type SelectEmployee = (employeeId: string) => Promise<Employee>;
 export class CaaFExtractionError extends Error {
   constructor(
     message: string,
-    public readonly cause?: unknown,
+    public override readonly cause?: unknown,
     public readonly rawResponse?: string,
   ) {
     super(message);
@@ -135,7 +142,10 @@ export class CaaFExtractionError extends Error {
 }
 
 export class MovementConstraintError extends Error {
-  constructor(message: string, public readonly input: unknown) {
+  constructor(
+    message: string,
+    public readonly input: unknown,
+  ) {
     super(message);
     this.name = "MovementConstraintError";
   }
