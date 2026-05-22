@@ -8,7 +8,7 @@
  * Mermaid 図は state-diagrams.md を参照。
  */
 
-import { setup, assign } from "xstate";
+import { assign, setup } from "xstate";
 import type { CaaFExtractionResult, Signal } from "./domain";
 
 // ============================================================================
@@ -167,7 +167,8 @@ export const caafCardMachine = setup({
         EXTRACTION_SUCCESS: [
           {
             target: "redirecting",
-            guard: ({ event }) => event.type === "EXTRACTION_SUCCESS" && event.extraction.action === "return",
+            guard: ({ event }) =>
+              event.type === "EXTRACTION_SUCCESS" && event.extraction.action === "return",
             actions: "storeExtraction",
           },
           {
