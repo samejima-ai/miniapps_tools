@@ -18,6 +18,11 @@
 create schema if not exists miniapps_tools;
 
 -- ----------------------------------------------------------------------------
+-- 拡張機能（gen_random_uuid() のため pgcrypto を有効化）
+-- ----------------------------------------------------------------------------
+create extension if not exists pgcrypto;
+
+-- ----------------------------------------------------------------------------
 -- ENUM 定義
 -- ----------------------------------------------------------------------------
 
@@ -153,7 +158,8 @@ with latest as (
     holder_id, moved_by, moved_at
   from miniapps_tools.item_movements
   where unit_id is not null
-  order by unit_id, moved_at desc
+  -- id desc を tiebreaker に置く（同 timestamp 時の非決定性を排除）
+  order by unit_id, moved_at desc, id desc
 )
 select
   u.id            as unit_id,
@@ -231,9 +237,9 @@ create policy p_mv_insert    on miniapps_tools.item_movements   for insert with 
 -- マスタ編集（items/units/locations の登録・更新）はMVPでは認証ユーザー可。
 --   将来 admin ロールに絞る。
 create policy p_items_write  on miniapps_tools.items            for insert with check (auth.role() = 'authenticated');
-create policy p_items_update on miniapps_tools.items            for update using (auth.role() = 'authenticated');
+create policy p_items_update on miniapps_tools.items            for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy p_units_write  on miniapps_tools.individual_units for insert with check (auth.role() = 'authenticated');
-create policy p_units_update on miniapps_tools.individual_units for update using (auth.role() = 'authenticated');
+create policy p_units_update on miniapps_tools.individual_units for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy p_loc_write    on miniapps_tools.locations        for insert with check (auth.role() = 'authenticated');
 
 -- ============================================================================

@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -6,10 +7,6 @@ export const metadata: Metadata = {
   description: "現場職人向け 工具持出・返却管理ミニアプリ",
   manifest: "/manifest.webmanifest",
   applicationName: "工具管理",
-  icons: {
-    icon: "/icons/icon-192.png",
-    apple: "/icons/icon-192.png",
-  },
 };
 
 export const viewport: Viewport = {
@@ -22,7 +19,7 @@ export const viewport: Viewport = {
 export default function RootLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <html lang="ja">

@@ -39,6 +39,14 @@ const config: Config = {
         sans: ["'Noto Sans JP'", "system-ui", "sans-serif"],
         mono: ["'JetBrains Mono'", "monospace"],
       },
+      fontSize: {
+        // DESIGN.md typography トークン（[size, { lineHeight, fontWeight }]）
+        "headline-lg": ["18px", { lineHeight: "1.3", fontWeight: "900" }],
+        "headline-md": ["15px", { lineHeight: "1.3", fontWeight: "700" }],
+        "body-md": ["13.5px", { lineHeight: "1.5", fontWeight: "400" }],
+        "body-sm": ["12px", { lineHeight: "1.5", fontWeight: "400" }],
+        "label-xs": ["10.5px", { lineHeight: "1.2", fontWeight: "700" }],
+      },
       borderRadius: {
         sm: "7px",
         md: "10px",
@@ -52,8 +60,18 @@ const config: Config = {
         "primary-cta": "0 2px 8px rgba(0,102,179,.2)",
       },
       spacing: {
+        // DESIGN.md spacing トークン（4px グリッド）
+        xs: "4px",
+        sm: "8px",
+        md: "12px",
+        lg: "16px",
+        xl: "24px",
         "0.5": "2px",
         "4.5": "18px",
+      },
+      maxWidth: {
+        // DESIGN.md Layout: モバイル 430px 想定
+        mobile: "430px",
       },
     },
   },

@@ -12,13 +12,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:invariants": "vitest run --config vitest.config.invariants.ts",
     "test:e2e": "playwright test",
     "test:e2e:update": "playwright test --update-snapshots",
-    "test:a11y": "lighthouse-ci || echo 'lighthouse-ci is optional in MVP; install when needed'",
-    "test:interaction-cost": "vitest run --config vitest.config.interaction-cost.ts",
-    "check:ssot": "node scripts/check-ssot.mjs",
-    "check:design-tokens": "node scripts/check-design-tokens.mjs"
+    "test:a11y": "lighthouse-ci || echo 'lighthouse-ci is optional in MVP; install when needed'"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.0",

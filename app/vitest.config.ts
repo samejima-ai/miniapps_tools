@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -12,8 +13,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": new URL("./src", import.meta.url).pathname,
-      "@spec": new URL("./spec", import.meta.url).pathname,
+      // Windows でも正しいファイルパスを返すよう fileURLToPath を使う
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@spec": fileURLToPath(new URL("./spec", import.meta.url)),
     },
   },
 });

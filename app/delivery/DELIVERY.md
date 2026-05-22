@@ -73,8 +73,12 @@
 - `history/ARCH-DECISIONS.md` — ADR-001（Next.js 仮確定）/ ADR-002（LLM router）/ ADR-003（スキーマ配置）
 
 ### autonomous-drive deployment
-- `.github/workflows/auto-merge.yml` — opt-out 反転モデル、`ALLOWED_AUTHORS=claude`
-- `.github/workflows/gemini-review.yml` — 工具管理ミニアプリ向けに paths + prompt 調整
+- **本 PR では未配置**。当初 `app/.github/workflows/` 配下に置いたが GitHub Actions は
+  リポルートの `.github/workflows/` しか読まないため、Copilot review 指摘 (PR #1) に従い削除した。
+- リポルートには既に dialog-harness 本体用の workflow が存在するが、miniapps_tools 用の
+  `paths: app/**` filter / `ALLOWED_AUTHORS=claude` を持つ専用 workflow は未配置。
+- L1 着手前に **crosscut-autonomous-drive skill 経由でリポルートに正式 deploy** が必要
+  （別 workflow 名・別 job として併存させる方式が望ましい。詳細は後続セッションで判断）。
 
 ### 設定
 - `.claude/settings.json` — Permissions + env
@@ -102,7 +106,7 @@
 
 - **リポジトリ配置**: `/home/user/miniapps_tools/app/` 配下にミニアプリの仕様・実装を集約しました。DH 本体と物理同居・仕様分離する形でよかったか
 - **フロントエンドスタック**: Next.js (App Router) で仮確定（ADR-001）。Kakuman Platform 側の標準スタックが明らかになったら ADR-001-v2 で切替可能な作りにしてあります
-- **autonomous_scope: full**: auto-merge + gemini-review を `.github/workflows/` に配置済。**GitHub Secrets と Labels は人間による手動セットアップが必要**（下記）
+- **autonomous_scope: full**: 本 PR では workflow ファイル自体は未配置（上記「autonomous-drive deployment」参照）。**workflow deploy + GitHub Secrets + Labels は人間 / 後続セッションでのセットアップが必要**（下記）
 
 ### 2. 人間による手動セットアップが必要なもの
 
@@ -116,9 +120,16 @@
 
 これらは AI が単独でセットアップできないため、P3 のタイミングで人間が実施してください。
 
-### 3. crosscut-autonomous-drive skill 経由の正式 deploy
+### 3. crosscut-autonomous-drive skill 経由の正式 deploy（**L1 着手前に必須**）
 
-本セッションでは workflow template を手動 placeholder 置換して配置しましたが、SHA pin や issue-pickup.yml の追加配置は `crosscut-autonomous-drive` skill 経由の正式 deploy が望ましい。後続セッションで実行推奨。
+本セッションでは workflow template を `app/.github/workflows/` 配下に手動 placeholder 置換して配置したが、GitHub Actions の仕様上 **リポルート `.github/workflows/` 以外は無視される** ため、Copilot review 指摘に従い削除した（PR #1 対応コミット）。
+
+L1 着手前に `crosscut-autonomous-drive` skill 経由でリポルートに正式 deploy が必要：
+
+- リポルートには既に **dialog-harness 本体用** の `auto-merge.yml` / `gemini-review.yml` / `harness-verify.yml` / `issue-pickup.yml` が存在する
+- これらは `paths` / `ALLOWED_AUTHORS` / prompt が dialog-harness 専用のため、miniapps_tools には適用されない
+- そのため、miniapps_tools 専用 workflow を別 name（例: `auto-merge-miniapps.yml` / `gemini-review-miniapps.yml`）で追加する形が必要
+- SHA pin / issue-pickup の miniapps_tools 対応 / paths union 戦略の選択は spec-architect + crosscut-autonomous-drive で判断
 
 ---
 
@@ -139,6 +150,7 @@
 - [ ] `pnpm run typecheck` が exit 0
 - [ ] `pnpm run build` が exit 0
 - [ ] `pnpm run test` が exit 0（テスト 0 件で OK）
+- [ ] miniapps_tools 専用 workflow をリポルートに deploy 済（crosscut-autonomous-drive 経由）
 - [ ] GitHub Secrets 2 件設定済
 - [ ] GitHub Labels 3 件作成済
 - [ ] Supabase プロジェクト作成済 + `.env.local` に URL / anon key 設定済

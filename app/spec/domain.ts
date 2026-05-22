@@ -94,8 +94,8 @@ export const ItemMovement = z.object({
   fromLocationId: z.string().uuid().nullable(),
   toLocationId: z.string().uuid().nullable(),
   projectId: z.string().uuid().nullable(),  // 現場（platform.projects と疎結合）
-  holderId: z.string().nullable(),          // 実際の保持者（platform.employees(id) と疎結合）
-  movedBy: z.string().nullable(),           // 入力者（同上）
+  holderId: z.string().uuid().nullable(),   // 実際の保持者（platform.employees(id) と疎結合）
+  movedBy: z.string().uuid().nullable(),    // 入力者（同上）
   movedAt: z.string().datetime(),
   source: z.string().default("caaf"),
   confidence: z.number().min(0).max(1).nullable(),  // ログ用途、状態判定には使わない (D-3)
@@ -124,7 +124,7 @@ export const UnitCurrentStatus = z.object({
   unitNumber: z.number().int().positive(),
   currentStatus: z.enum(["in", "out"]),  // movement_type から導出
   currentProjectId: z.string().uuid().nullable(),
-  currentHolderId: z.string().nullable(),
+  currentHolderId: z.string().uuid().nullable(),
   lastMovedAt: z.string().datetime().nullable(),
   daysOut: z.number().int().nullable(),
 });
@@ -140,7 +140,7 @@ export const CurrentlyOut = z.object({
   itemName: z.string(),
   unitNumber: z.number().int().positive(),
   currentProjectId: z.string().uuid().nullable(),
-  currentHolderId: z.string().nullable(),
+  currentHolderId: z.string().uuid().nullable(),
   lastMovedAt: z.string().datetime(),
   daysOut: z.number().int(),
 });
@@ -198,7 +198,7 @@ export type Signal = z.infer<typeof Signal>;
  * Platform 統合時に platform.employees(id) へ参照差替えする。
  */
 export const Employee = z.object({
-  id: z.string(),       // Supabase Auth user_id（将来 platform.employees.id）
+  id: z.string().uuid(),  // Supabase Auth user_id（将来 platform.employees.id）
   name: z.string(),
 });
 export type Employee = z.infer<typeof Employee>;
