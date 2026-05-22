@@ -1,0 +1,247 @@
+# gemini-review — 独立 Gemini レビュアー（工具管理ミニアプリ向け）
+#
+# dialog-harness v5.17.0 の template から spec-architect 対話で placeholder 置換 + プロジェクト向け編集して配置。
+# crosscut-autonomous-drive skill による正式 deploy (SHA pin、prompt のさらなる調整等) は後続セッションで実行推奨。
+#
+# 必要な setup:
+# - Repo Settings → Secrets に GEMINI_API_KEY (Google AI Studio 発行、無料 tier) と GH_REVIEW_PAT (Pull requests: Read+Write) を設定
+
+name: gemini-review
+
+env:
+  GEMINI_MODEL: gemini-2.5-pro
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize, reopened]
+    paths:
+      - "app/src/**"
+      - "app/spec/**"
+      - "app/supabase/**"
+      - "app/sensors/**"
+      - "app/SPEC.md"
+      - "app/DONT.md"
+      - "app/DESIGN.md"
+      - "app/REGIME.md"
+      - "app/CLAUDE.md"
+      - "app/history/ARCH-DECISIONS.md"
+
+concurrency:
+  group: "gemini-review-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.user.login != 'github-actions[bot]' &&
+      github.event.pull_request.user.login != 'copilot-pull-request-reviewer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Check GEMINI_API_KEY availability
+        id: check_key
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::notice::GEMINI_API_KEY 未設定。gemini-review をスキップします。"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check GH_REVIEW_PAT availability
+        id: check_pat
+        env:
+          GH_REVIEW_PAT: ${{ secrets.GH_REVIEW_PAT }}
+        run: |
+          if [ -z "$GH_REVIEW_PAT" ]; then
+            echo "::notice::GH_REVIEW_PAT 未設定。gemini-review をスキップします。"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect self-PR
+        id: detect_self_pr
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_REVIEW_PAT }}
+        run: |
+          set -euo pipefail
+          PR_AUTHOR='${{ github.event.pull_request.user.login }}'
+          PAT_OWNER=$(gh api /user --jq '.login' 2>/dev/null || echo "")
+          if [ -z "$PAT_OWNER" ]; then
+            echo "is_self_pr=unknown" >> "$GITHUB_OUTPUT"
+          elif [ "$PR_AUTHOR" = "$PAT_OWNER" ]; then
+            echo "is_self_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_self_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Inject required context files
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .gemini-context
+          {
+            echo "# 必須コンテキストファイル (workflow 事前注入)"
+            echo ""
+          } > .gemini-context/required.md
+          for f in app/SPEC.md app/DONT.md app/DESIGN.md app/REGIME.md app/spec/invariants.feature; do
+            if [ -f "$f" ]; then
+              {
+                echo "## $f"
+                echo ""
+                echo '```'
+                cat "$f"
+                echo '```'
+                echo ""
+              } >> .gemini-context/required.md
+            fi
+          done
+
+      - name: Run Gemini PR review
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true'
+        uses: google-github-actions/run-gemini-cli@v0
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PERSONAL_ACCESS_TOKEN: ${{ secrets.GH_REVIEW_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          gemini_model: ${{ env.GEMINI_MODEL }}
+          github_pr_number: ${{ github.event.pull_request.number }}
+          settings: |
+            {
+              "model": {
+                "name": "${{ env.GEMINI_MODEL }}",
+                "maxSessionTurns": 25
+              },
+              "mcpServers": {
+                "github": {
+                  "command": "docker",
+                  "args": [
+                    "run", "-i", "--rm",
+                    "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+                    "ghcr.io/github/github-mcp-server:v0.27.0"
+                  ],
+                  "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+                  },
+                  "includeTools": [
+                    "pull_request_read",
+                    "get_file_contents",
+                    "search_code",
+                    "add_comment_to_pending_review",
+                    "pull_request_review_write"
+                  ]
+                }
+              }
+            }
+          prompt: |
+            あなたは「工具管理ミニアプリ (miniapps_tools)」への **プロジェクト固有仕様軸の独立レビュアー** です。
+            Copilot review が汎用コードレビューを担当するため、視点を直交させ **罠A群 / SPEC 契約 / DESIGN.md 整合** に集中します。
+
+            ## レビュー対象
+
+            - **対象 repository**: `${{ github.repository }}`
+            - **対象 PR 番号**: **#${{ github.event.pull_request.number }}**
+            - **head SHA**: `${{ github.event.pull_request.head.sha }}`
+            - **base branch**: `${{ github.event.pull_request.base.ref }}`
+
+            最初に `pull_request_read` で diff / files / 既存 review を取得。
+
+            ## 必須コンテキスト
+
+            workflow が `.gemini-context/required.md` に SPEC.md / DONT.md / DESIGN.md / REGIME.md / invariants.feature を集約済み。
+            **MCP より先に bash で直接読む**:
+
+            ```bash
+            cat .gemini-context/required.md
+            ```
+
+            ## self-PR ハンドリング
+
+            - `IS_SELF_PR=${{ steps.detect_self_pr.outputs.is_self_pr }}`
+              - `true`: 最初から event="COMMENT"
+              - `false`: APPROVE / COMMENT / REQUEST_CHANGES
+              - `unknown`: 状況で fallback 判別
+
+            ## 視点直交の原則（最重要）
+
+            **対象としない**領域（Copilot 担当）:
+            - 一般的なコードスタイル / 命名 / lint / format / typo
+
+            **対象とする**領域（工具管理ミニアプリ固有）:
+            - **罠A群 / DONT.md 遵守**:
+              - items / individual_units に status / current_holder / current_location 等のカラム追加が**ない**
+              - item_movements に UPDATE / DELETE policy が**ない**（append-only）
+              - holder_id と moved_by が**別カラム**（D-7）
+              - 信号色 confidence ベースの自動 INSERT が**ない**（D-4 Phase 0 全件確認）
+              - LLM「全返却」推論の展開が**ない**（D-5）
+              - テーブル名が tools でなく items（D-6）
+            - **SSOT 整合**:
+              - supabase/migrations/0001_init_miniapps_tools.sql と spec/domain.ts のカラム / フィールドが整合
+              - 状態取得が v_unit_current_status / v_currently_out / v_item_quantity_status View 経由のみ
+            - **DESIGN.md 整合**:
+              - src/ に HEX リテラル直書きがない（Tailwind トークン経由）
+              - フォントウェイト 3 種以上混在なし
+              - colors.error / signal-* の用途逸脱なし
+              - スワイプ / ロングプレス禁止（D-8）
+            - **状態マシン整合**:
+              - spec/state-machine.ts の canConfirm ガードが破壊されていない
+              - action=return が redirecting 経路を経由（CaaF カードから直接 return INSERT しない）
+            - **Gherkin 不変条件**:
+              - spec/invariants.feature の Sad/Evil シナリオが test:invariants で fail しないコードか
+            - **永続化 / ストレージ**:
+              - Google Workspace / localStorage への業務データ長期保存がない（D-9）
+
+            ## 出力形式（厳密）
+
+            最終 verdict は `pull_request_review_write` で投稿。body は以下のみ:
+
+            ### 問題なしの場合
+            ```
+            問題: なし
+            ```
+            event は APPROVE（`IS_SELF_PR=true` 時は COMMENT）。
+
+            ### 問題ありの場合
+            ```
+            問題: あり (N 件)
+
+            ### 1. <問題点を 1〜2 行で、該当 DONT 番号 D-X / 罠A を明記>
+            参照: https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>
+            ```
+            event は REQUEST_CHANGES または COMMENT。
+
+            ## 必須実行プロトコル
+
+            - 最後に必ず `pull_request_review_write` で verdict を確定
+            - tool 呼び出しなしで完了することは禁止
+            - line comment は使用しない（単一 verdict body に集約）
+
+      - name: Upload gemini-artifacts
+        if: steps.check_key.outputs.available == 'true' && steps.check_pat.outputs.available == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-artifacts-pr-${{ github.event.pull_request.number }}-run-${{ github.run_id }}
+          path: |
+            gemini-artifacts/
+            .gemini/
+          if-no-files-found: warn
+          retention-days: 7

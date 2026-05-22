@@ -1,0 +1,25 @@
+{
+  "name": "工具管理",
+  "short_name": "工具管理",
+  "description": "カクマン工業 現場職人向け 工具持出・返却管理",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f0f3f7",
+  "theme_color": "#0066b3",
+  "orientation": "portrait",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
