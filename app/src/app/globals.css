@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * DESIGN.md トークン参照 SSOT
+ * - HEX リテラルは tailwind.config.ts で展開される
+ * - src/ 配下では `bg-primary` `text-ink` 等の Tailwind クラス経由のみ使う
+ * - 直接 #0066b3 等を CSS に書かない（罠A 補助検出の対象）
+ */
+
+:root {
+  font-family: "Noto Sans JP", system-ui, sans-serif;
+  color-scheme: light;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Noto Sans JP は L1 着手時に next/font または Google Fonts で正式ロード */
