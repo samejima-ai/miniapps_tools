@@ -147,7 +147,23 @@ export type ResolvedItem = {
   availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
   quantity: number | null;
   confidence: number;
-  status: "matched" | "not_found" | "unit_missing" | "no_unit_specified";
+  status:
+    | "matched"
+    | "not_found"
+    | "unit_missing"
+    | "no_unit_specified"
+    | "candidates_proposed";
+  /** LLM 提案候補（status="candidates_proposed" 時のピッカー UI 用） */
+  candidates: Array<{
+    itemId: string;
+    name: string;
+    trackingType: "individual" | "quantity";
+    /** LLM が推定した類似度（0-1） */
+    confidence: number;
+    /** 番号選択 UI 用に候補工具の利用可能番号も先取り */
+    availableUnits: number[];
+    availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
+  }>;
 };
 
 const GEMINI_MODEL = "gemini-2.0-flash-lite";
@@ -253,6 +269,165 @@ function normalizeExtraction(raw: unknown): unknown {
 }
 
 /**
+ * Layer C: not_found のアイテムを LLM で意味的に類似する候補と紐付ける。
+ *
+ * ILIKE 部分一致で見つからなかったアイテムに対し、マスタ全件を LLM に渡して
+ * 上位3候補を提案させる。確信度 0.5 未満は破棄。
+ *
+ * D-5 維持: LLM は提案のみ。最終決定は人間タップ（status="candidates_proposed"）。
+ */
+const CANDIDATE_PROPOSAL_PROMPT = `あなたは工具名の類似性判定器です。
+ユーザーが入力した工具名と、マスタの工具一覧を比較して、
+意味的に近い候補を上位3件まで提案してください。
+
+### 必ず守るルール
+- JSON のみ出力。前置き・解説・markdown は禁止
+- マスタにある工具のみ提案する（IDが必要）
+- 確信度 0.5 未満の候補は出さない（無理に出さない）
+- 全く似た工具がなければ空配列を返す（候補を捏造しない）
+- 「充電ブロアー」←→「エンジンブロワー」のような表記揺れ・略称・別名を許容
+- 動力源違い（電動/エンジン）など属性違いでも、用途が同じなら候補とする
+- 工具カテゴリが完全に異なるものは出さない（バッテリーをドライバの候補にしない）
+
+### 出力JSON形式
+{
+  "proposals": [
+    {
+      "extractedName": "ユーザー入力名",
+      "candidates": [
+        { "itemId": "マスタID", "name": "マスタ正式名", "confidence": 0.0-1.0 }
+      ]
+    }
+  ]
+}`;
+
+async function augmentNotFoundWithCandidates(
+  resolved: ResolvedItem[],
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+): Promise<void> {
+  const notFound = resolved.filter((r) => r.status === "not_found");
+  if (notFound.length === 0) return;
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "ここにキーを貼る") return;
+
+  // マスタ全件取得（active のみ）
+  const { data: allItems } = await supabase
+    .from("items")
+    .select("id, name, tracking_type")
+    .eq("is_active", true)
+    .order("name", { ascending: true });
+
+  if (!allItems || allItems.length === 0) return;
+
+  const masterList = allItems
+    .map((i) => `- ${i.id} | ${i.name} (${i.tracking_type})`)
+    .join("\n");
+  const queryList = notFound.map((r) => `- ${r.extractedName}`).join("\n");
+
+  const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: CANDIDATE_PROPOSAL_PROMPT },
+            { text: `\n\n### マスタ工具一覧（ID | 名前 (追跡方式)）\n${masterList}` },
+            { text: `\n\n### ユーザー入力（マスタ未一致）\n${queryList}` },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
+    }),
+  });
+
+  if (!res.ok) {
+    console.warn("[Layer C] candidate proposal failed:", res.status);
+    return;
+  }
+
+  const data = await res.json();
+  const text: string | undefined =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) return;
+
+  let parsed: { proposals?: Array<{ extractedName: string; candidates: Array<{ itemId: string; name: string; confidence: number }> }> };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    console.warn("[Layer C] JSON parse error:", text);
+    return;
+  }
+
+  const proposalsByName = new Map<string, Array<{ itemId: string; name: string; confidence: number }>>();
+  for (const p of parsed.proposals ?? []) {
+    proposalsByName.set(p.extractedName, p.candidates ?? []);
+  }
+
+  // 各 not_found に対して候補を取得し、各候補の availableUnits も先取り
+  const allCandidateIds = new Set<string>();
+  for (const props of proposalsByName.values()) {
+    for (const c of props) {
+      if (c.confidence >= 0.5) allCandidateIds.add(c.itemId);
+    }
+  }
+
+  if (allCandidateIds.size === 0) return;
+
+  // 全候補の availableUnits を一括取得
+  const { data: candidateUnits } = await supabase
+    .from("individual_units")
+    .select("id, item_id, unit_number")
+    .in("item_id", Array.from(allCandidateIds))
+    .eq("is_active", true)
+    .order("unit_number", { ascending: true });
+
+  const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
+  for (const u of candidateUnits ?? []) {
+    const itemId = u.item_id as string;
+    const list = unitsByItem.get(itemId) ?? [];
+    list.push({
+      unitNumber: u.unit_number as number,
+      unitId: u.id as string,
+    });
+    unitsByItem.set(itemId, list);
+  }
+
+  // resolved に候補を反映
+  const masterById = new Map(
+    allItems.map((i) => [i.id as string, i]),
+  );
+
+  for (const item of notFound) {
+    const props = proposalsByName.get(item.extractedName) ?? [];
+    const filtered = props
+      .filter((c) => c.confidence >= 0.5)
+      .filter((c) => masterById.has(c.itemId))
+      .slice(0, 3);
+
+    if (filtered.length === 0) continue;
+
+    item.status = "candidates_proposed";
+    item.candidates = filtered.map((c) => {
+      const m = masterById.get(c.itemId);
+      const details = unitsByItem.get(c.itemId) ?? [];
+      return {
+        itemId: c.itemId,
+        name: c.name,
+        trackingType:
+          (m?.tracking_type as "individual" | "quantity") ?? "individual",
+        confidence: c.confidence,
+        availableUnits: details.map((d) => d.unitNumber),
+        availableUnitDetails: details,
+      };
+    });
+  }
+}
+
+/**
  * LLM 抽出結果をマスタ DB と照合し、正式名称・番号存在を解決する。
  * 確認カード表示前に呼ぶことで、人間の入力ミスを確定前に補完・警告。
  */
@@ -320,6 +495,7 @@ async function resolveAgainstMaster(
         quantity: item.quantity,
         confidence: item.confidence,
         status: "not_found",
+        candidates: [],
       });
       continue;
     }
@@ -368,8 +544,12 @@ async function resolveAgainstMaster(
         : isIndividualNoUnit
           ? "no_unit_specified"
           : "matched",
+      candidates: [],
     });
   }
+
+  // ── Layer C: not_found のアイテムに LLM 類似度マッチング ──
+  await augmentNotFoundWithCandidates(resolved, supabase);
 
   return resolved;
 }
