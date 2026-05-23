@@ -9,7 +9,8 @@ const BASE_URL = baseUrlEnv && baseUrlEnv.length > 0 ? baseUrlEnv : "http://loca
 const useOwnDevServer = !baseUrlEnv;
 
 export default defineConfig({
-  testDir: "tests/e2e",
+  // tests/e2e (E2E shorten) と tests/perf (Interaction Cost) の双方を含める
+  testDir: "tests",
   outputDir: "playwright-report",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
