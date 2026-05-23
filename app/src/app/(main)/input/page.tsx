@@ -394,13 +394,29 @@ export default function InputPage() {
             if (i !== itemIndex) return item;
             const r = item.resolved;
 
-            // 候補の trackingType に応じてステータス再計算
-            const isIndividualNoUnit =
-              candidate.trackingType === "individual" &&
-              r.unitResolutions.length === 0;
-            const hasUnits = r.unitResolutions.length > 0;
+            // quantity 管理: 番号情報をクリア、即 matched
+            if (candidate.trackingType === "quantity") {
+              return {
+                ...item,
+                resolved: {
+                  ...r,
+                  matchedItemId: candidate.itemId,
+                  matchedName: candidate.name,
+                  trackingType: "quantity" as const,
+                  unitResolutions: [],
+                  availableUnits: [],
+                  availableUnitDetails: [],
+                  status: "matched" as ResolvedItem["status"],
+                  candidates: [],
+                },
+                status: "pending" as const,
+              };
+            }
 
-            // 既存指定番号があれば候補側の availableUnits で再評価
+            // individual 管理: 既存指定番号があれば候補側 availableUnits で再評価
+            const hasUnits = r.unitResolutions.length > 0;
+            const isIndividualNoUnit = !hasUnits;
+
             let newUnitResolutions = r.unitResolutions;
             if (hasUnits) {
               const unitMap = new Map(
@@ -420,7 +436,7 @@ export default function InputPage() {
                 ...r,
                 matchedItemId: candidate.itemId,
                 matchedName: candidate.name,
-                trackingType: candidate.trackingType,
+                trackingType: "individual" as const,
                 unitResolutions: newUnitResolutions,
                 availableUnits: candidate.availableUnits,
                 availableUnitDetails: candidate.availableUnitDetails,

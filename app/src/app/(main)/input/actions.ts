@@ -312,12 +312,16 @@ async function augmentNotFoundWithCandidates(
   if (!apiKey || apiKey === "ここにキーを貼る") return;
 
   // マスタ全件取得（active のみ）
-  const { data: allItems } = await supabase
+  const { data: allItems, error: itemsErr } = await supabase
     .from("items")
     .select("id, name, tracking_type")
     .eq("is_active", true)
     .order("name", { ascending: true });
 
+  if (itemsErr) {
+    console.warn("[Layer C] master items fetch failed:", itemsErr);
+    return;
+  }
   if (!allItems || allItems.length === 0) return;
 
   const masterList = allItems
@@ -354,7 +358,7 @@ async function augmentNotFoundWithCandidates(
     data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) return;
 
-  let parsed: { proposals?: Array<{ extractedName: string; candidates: Array<{ itemId: string; name: string; confidence: number }> }> };
+  let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
@@ -362,9 +366,42 @@ async function augmentNotFoundWithCandidates(
     return;
   }
 
-  const proposalsByName = new Map<string, Array<{ itemId: string; name: string; confidence: number }>>();
-  for (const p of parsed.proposals ?? []) {
-    proposalsByName.set(p.extractedName, p.candidates ?? []);
+  // 防御的バリデーション: 仕様外の JSON 形式は破棄して Layer C スキップ
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    !("proposals" in parsed) ||
+    !Array.isArray((parsed as { proposals: unknown }).proposals)
+  ) {
+    console.warn("[Layer C] invalid proposals shape, skipping:", parsed);
+    return;
+  }
+
+  const rawProposals = (parsed as { proposals: unknown[] }).proposals;
+  const proposalsByName = new Map<
+    string,
+    Array<{ itemId: string; name: string; confidence: number }>
+  >();
+
+  for (const rawP of rawProposals) {
+    if (!rawP || typeof rawP !== "object") continue;
+    const p = rawP as Record<string, unknown>;
+    if (typeof p.extractedName !== "string") continue;
+    if (!Array.isArray(p.candidates)) continue;
+
+    const validCandidates = (p.candidates as unknown[])
+      .map((rawC): { itemId: string; name: string; confidence: number } | null => {
+        if (!rawC || typeof rawC !== "object") return null;
+        const c = rawC as Record<string, unknown>;
+        if (typeof c.itemId !== "string" || c.itemId === "") return null;
+        if (typeof c.name !== "string" || c.name === "") return null;
+        if (typeof c.confidence !== "number" || !Number.isFinite(c.confidence)) return null;
+        const conf = Math.max(0, Math.min(1, c.confidence));
+        return { itemId: c.itemId, name: c.name, confidence: conf };
+      })
+      .filter((c): c is { itemId: string; name: string; confidence: number } => c !== null);
+
+    proposalsByName.set(p.extractedName, validCandidates);
   }
 
   // 各 not_found に対して候補を取得し、各候補の availableUnits も先取り
@@ -378,12 +415,17 @@ async function augmentNotFoundWithCandidates(
   if (allCandidateIds.size === 0) return;
 
   // 全候補の availableUnits を一括取得
-  const { data: candidateUnits } = await supabase
+  const { data: candidateUnits, error: unitsErr } = await supabase
     .from("individual_units")
     .select("id, item_id, unit_number")
     .in("item_id", Array.from(allCandidateIds))
     .eq("is_active", true)
     .order("unit_number", { ascending: true });
+
+  if (unitsErr) {
+    console.warn("[Layer C] candidate units fetch failed:", unitsErr);
+    // 番号情報なしで候補を返す（matched 後の番号選択 UI は空表示になるが破綻はしない）
+  }
 
   const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
   for (const u of candidateUnits ?? []) {
@@ -569,6 +611,8 @@ function determineSignalWithResolution(
   if (resolved.length === 0) return baseSignal;
   if (resolved.some((r) => r.status === "not_found")) return "orange";
   if (resolved.some((r) => r.status === "unit_missing")) return "orange";
+  // candidates_proposed: LLM 提案ありだが人間タップ未確定 → 黄（要選択）
+  if (resolved.some((r) => r.status === "candidates_proposed")) return "yellow";
   if (resolved.some((r) => r.status === "no_unit_specified")) return "yellow";
 
   return baseSignal;
