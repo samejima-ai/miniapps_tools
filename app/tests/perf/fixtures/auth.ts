@@ -4,12 +4,12 @@
  * Gate 画面を踏まず、sessionStorage に user を直接セットして
  * /list 等の認証必須画面に直接遷移できるようにする。
  *
- * user-context.tsx SESSION_KEY = "miniapps_tools_current_user"
+ * SESSION_KEY はアプリ本体 (user-context.tsx) から import する。
+ * テスト側でハードコードすると app 側変更で静かに壊れる。
  */
 
 import type { Page } from "@playwright/test";
-
-const SESSION_KEY = "miniapps_tools_current_user";
+import { SESSION_KEY } from "@/lib/user-context";
 
 const DEMO_USER = {
   id: "00000000-0000-0000-0000-000000000001",

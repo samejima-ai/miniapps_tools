@@ -14,7 +14,11 @@
 import type { Employee } from "@/types";
 import { type ReactNode, createContext, useCallback, useContext, useState } from "react";
 
-const SESSION_KEY = "miniapps_tools_current_user";
+/**
+ * sessionStorage キー。テストからも参照されるので export している
+ * (tests/perf/fixtures/auth.ts が pre-authenticate で利用)。
+ */
+export const SESSION_KEY = "miniapps_tools_current_user";
 
 type UserContextValue = {
   /** 現在選択中のユーザー (null = 未選択 = Gate 表示) */
