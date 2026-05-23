@@ -380,6 +380,83 @@ export default function InputPage() {
     );
   }, []);
 
+  // ── LLM 候補選択（not_found → 候補から確定） ──
+  const handleSelectCandidate = useCallback(
+    (
+      strokeId: string,
+      itemIndex: number,
+      candidate: ResolvedItem["candidates"][number],
+    ) => {
+      setStrokes((prev) =>
+        prev.map((s) => {
+          if (s.id !== strokeId) return s;
+          const items = s.items.map((item, i) => {
+            if (i !== itemIndex) return item;
+            const r = item.resolved;
+
+            // quantity 管理: 番号情報をクリア、即 matched
+            if (candidate.trackingType === "quantity") {
+              return {
+                ...item,
+                resolved: {
+                  ...r,
+                  matchedItemId: candidate.itemId,
+                  matchedName: candidate.name,
+                  trackingType: "quantity" as const,
+                  unitResolutions: [],
+                  availableUnits: [],
+                  availableUnitDetails: [],
+                  status: "matched" as ResolvedItem["status"],
+                  candidates: [],
+                },
+                status: "pending" as const,
+              };
+            }
+
+            // individual 管理: 既存指定番号があれば候補側 availableUnits で再評価
+            const hasUnits = r.unitResolutions.length > 0;
+            const isIndividualNoUnit = !hasUnits;
+
+            let newUnitResolutions = r.unitResolutions;
+            if (hasUnits) {
+              const unitMap = new Map(
+                candidate.availableUnitDetails.map((d) => [d.unitNumber, d.unitId]),
+              );
+              newUnitResolutions = r.unitResolutions.map((u) => ({
+                unitNumber: u.unitNumber,
+                unitId: unitMap.get(u.unitNumber) ?? null,
+                exists: unitMap.has(u.unitNumber),
+              }));
+            }
+            const hasUnitMissing = newUnitResolutions.some((u) => !u.exists);
+
+            return {
+              ...item,
+              resolved: {
+                ...r,
+                matchedItemId: candidate.itemId,
+                matchedName: candidate.name,
+                trackingType: "individual" as const,
+                unitResolutions: newUnitResolutions,
+                availableUnits: candidate.availableUnits,
+                availableUnitDetails: candidate.availableUnitDetails,
+                status: (hasUnitMissing
+                  ? "unit_missing"
+                  : isIndividualNoUnit
+                    ? "no_unit_specified"
+                    : "matched") as ResolvedItem["status"],
+                candidates: [],
+              },
+              status: "pending" as const,
+            };
+          });
+          return { ...s, items };
+        }),
+      );
+    },
+    [],
+  );
+
   // ── 番号選択（no_unit_specified / unit_missing 時） ──
   // ── 案件候補選択（複数マッチ時） ──
   const handleSelectProject = useCallback(
@@ -707,6 +784,9 @@ export default function InputPage() {
                                 onUndoSkip={() => handleUndoSkip(stroke.id, i)}
                                 onSelectUnit={(num) =>
                                   handleSelectUnit(stroke.id, i, num)
+                                }
+                                onSelectCandidate={(c) =>
+                                  handleSelectCandidate(stroke.id, i, c)
                                 }
                               />
                             ))}

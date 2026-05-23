@@ -24,9 +24,18 @@ type Props = {
   onSkip: () => void;
   onUndoSkip: () => void;
   onSelectUnit?: (unitNumber: number) => void;
+  /** LLM 候補から1件選択 */
+  onSelectCandidate?: (candidate: ResolvedItem["candidates"][number]) => void;
 };
 
-export function StrokeItemCard({ item, onConfirm, onSkip, onUndoSkip, onSelectUnit }: Props) {
+export function StrokeItemCard({
+  item,
+  onConfirm,
+  onSkip,
+  onUndoSkip,
+  onSelectUnit,
+  onSelectCandidate,
+}: Props) {
   const { resolved, status } = item;
   const canConfirm = resolved.status === "matched" && status === "pending";
 
@@ -126,6 +135,36 @@ export function StrokeItemCard({ item, onConfirm, onSkip, onUndoSkip, onSelectUn
       {resolved.status === "not_found" && (
         <div className="text-label-xs text-error">
           マスタに一致する工具がありません
+        </div>
+      )}
+      {/* LLM 提案候補ピッカー */}
+      {resolved.status === "candidates_proposed" && resolved.candidates.length > 0 && (
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-warning font-bold">
+            似た工具が見つかりました — 選択してください
+          </div>
+          <div className="flex flex-col gap-xs">
+            {resolved.candidates.map((c) => (
+              <button
+                key={c.itemId}
+                type="button"
+                onClick={() => onSelectCandidate?.(c)}
+                className="text-left bg-surface border border-divider rounded-md px-md py-sm min-h-[40px] hover:border-primary transition-colors"
+              >
+                <div className="flex items-center justify-between gap-sm">
+                  <span className="text-body-sm text-ink font-bold truncate">{c.name}</span>
+                  <span className="text-label-xs text-text-secondary font-mono shrink-0">
+                    {Math.round(c.confidence * 100)}%
+                  </span>
+                </div>
+                {c.availableUnits.length > 0 && (
+                  <div className="text-label-xs text-text-secondary mt-0.5">
+                    利用可能番号: {c.availableUnits.join(", ")}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       )}
       {resolved.status === "unit_missing" && (
