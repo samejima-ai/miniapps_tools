@@ -12,7 +12,7 @@
  */
 
 import type { Employee } from "@/types";
-import { type ReactNode, createContext, useCallback, useContext, useEffect, useState } from "react";
+import { type ReactNode, createContext, useCallback, useContext, useState } from "react";
 
 const SESSION_KEY = "miniapps_tools_current_user";
 
@@ -44,13 +44,8 @@ function loadFromSession(): Employee | null {
 }
 
 export function UserProvider({ children }: { children: ReactNode }) {
-  const [currentUser, setCurrentUser] = useState<Employee | null>(null);
-
-  // 初回マウント時に sessionStorage から復元
-  useEffect(() => {
-    const saved = loadFromSession();
-    if (saved) setCurrentUser(saved);
-  }, []);
+  // 初期レンダーで sessionStorage から同期復元（hydration バウンス防止）
+  const [currentUser, setCurrentUser] = useState<Employee | null>(() => loadFromSession());
 
   const selectUser = useCallback((employee: Employee) => {
     setCurrentUser(employee);

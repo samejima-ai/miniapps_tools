@@ -45,7 +45,7 @@ export async function listCurrentlyOut(
 
   if (error) {
     console.error("listCurrentlyOut error:", error);
-    return [];
+    throw new Error(`持出中一覧の取得に失敗しました: ${error.message}`);
   }
 
   // snake_case → camelCase マッピング

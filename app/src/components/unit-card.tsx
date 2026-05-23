@@ -46,6 +46,7 @@ export function UnitCard({ item, returnMode, selected, onToggleSelect }: Props) 
             backgroundColor: selected ? "var(--color-primary, #0066b3)" : "transparent",
           }}
           aria-label={`${item.itemName} #${item.unitNumber} を選択`}
+          aria-pressed={selected}
         >
           {selected && (
             <svg

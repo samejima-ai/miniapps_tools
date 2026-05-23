@@ -11,7 +11,7 @@
  */
 
 import { determineSignal } from "@/lib/llm/router";
-import { createClient } from "@/lib/supabase/client";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { CaaFExtractionResultSchema } from "@/types";
 
@@ -61,6 +61,7 @@ export async function extractAction(
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    cache: "no-store",
     body: JSON.stringify({
       contents: [
         {
@@ -129,7 +130,7 @@ export async function confirmCheckoutAction(
   movedBy: string,
   holderId: string | null,
 ): Promise<{ insertedCount: number; errors: string[] }> {
-  const supabase = createClient();
+  const supabase = await createServerSupabaseClient();
   const errors: string[] = [];
   let insertedCount = 0;
 
@@ -187,22 +188,17 @@ export async function confirmCheckoutAction(
           insertedCount++;
         }
       }
+    } else if (item.trackingType === "individual") {
+      // 個体管理なのに番号未指定 → 誤登録防止のため拒否
+      errors.push(
+        `「${matchedItem.name}」は個体管理です。番号を指定してください（例: 3番）`,
+      );
     } else {
-      // 番号指定なし → item_id のみで登録（個体未特定）
-      // 該当 item の先頭 unit を使う
-      const { data: units } = await supabase
-        .from("individual_units")
-        .select("id")
-        .eq("item_id", matchedItem.id)
-        .eq("is_active", true)
-        .limit(1);
-
-      const unit = units?.[0];
-
+      // 数量管理（trackingType='quantity'）→ unit 不要、数量で登録
       const { error } = await supabase.from("item_movements").insert({
         item_id: matchedItem.id,
-        unit_id: unit?.id ?? null,
-        quantity: unit ? null : 1,
+        unit_id: null,
+        quantity: item.quantity ?? 1,
         movement_type: extraction.action,
         from_location_id: null,
         to_location_id: null,
