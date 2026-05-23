@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "app-next-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "app", "dev"],
+      "port": 3000,
+      "autoPort": true
+    }
+  ],
+  "autoVerify": true
+}

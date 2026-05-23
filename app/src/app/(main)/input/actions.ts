@@ -10,7 +10,9 @@
  * confidence は信号色 UI 表示とログ用途のみ (D-3)。
  */
 
-import { determineSignal } from "@/lib/llm/router";
+import { learnAlias } from "@/lib/caaf/alias";
+import { callGeminiJSON, isGeminiConfigured } from "@/lib/caaf/llm";
+import { determineSignal } from "@/lib/caaf/signal";
 import { createPublicServerClient, createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { CaaFExtractionResultSchema } from "@/types";
@@ -147,12 +149,7 @@ export type ResolvedItem = {
   availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
   quantity: number | null;
   confidence: number;
-  status:
-    | "matched"
-    | "not_found"
-    | "unit_missing"
-    | "no_unit_specified"
-    | "candidates_proposed";
+  status: "matched" | "not_found" | "unit_missing" | "no_unit_specified" | "candidates_proposed";
   /** LLM 提案候補（status="candidates_proposed" 時のピッカー UI 用） */
   candidates: Array<{
     itemId: string;
@@ -165,9 +162,6 @@ export type ResolvedItem = {
     availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
   }>;
 };
-
-const GEMINI_MODEL = "gemini-2.0-flash-lite";
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 const EXTRACTION_PROMPT = `あなたは工具管理システムの入力解析器です。
 ユーザーの自然文から工具の持出・返却情報を抽出してください。
@@ -307,9 +301,7 @@ async function augmentNotFoundWithCandidates(
 ): Promise<void> {
   const notFound = resolved.filter((r) => r.status === "not_found");
   if (notFound.length === 0) return;
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "ここにキーを貼る") return;
+  if (!isGeminiConfigured()) return;
 
   // マスタ全件取得（active のみ）
   const { data: allItems, error: itemsErr } = await supabase
@@ -324,45 +316,18 @@ async function augmentNotFoundWithCandidates(
   }
   if (!allItems || allItems.length === 0) return;
 
-  const masterList = allItems
-    .map((i) => `- ${i.id} | ${i.name} (${i.tracking_type})`)
-    .join("\n");
+  const masterList = allItems.map((i) => `- ${i.id} | ${i.name} (${i.tracking_type})`).join("\n");
   const queryList = notFound.map((r) => `- ${r.extractedName}`).join("\n");
-
-  const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { text: CANDIDATE_PROPOSAL_PROMPT },
-            { text: `\n\n### マスタ工具一覧（ID | 名前 (追跡方式)）\n${masterList}` },
-            { text: `\n\n### ユーザー入力（マスタ未一致）\n${queryList}` },
-          ],
-        },
-      ],
-      generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
-    }),
-  });
-
-  if (!res.ok) {
-    console.warn("[Layer C] candidate proposal failed:", res.status);
-    return;
-  }
-
-  const data = await res.json();
-  const text: string | undefined =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) return;
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
-  } catch {
-    console.warn("[Layer C] JSON parse error:", text);
+    parsed = await callGeminiJSON([
+      { text: CANDIDATE_PROPOSAL_PROMPT },
+      { text: `\n\n### マスタ工具一覧（ID | 名前 (追跡方式)）\n${masterList}` },
+      { text: `\n\n### ユーザー入力（マスタ未一致）\n${queryList}` },
+    ]);
+  } catch (err) {
+    console.warn("[Layer C] candidate proposal failed:", err);
     return;
   }
 
@@ -424,7 +389,6 @@ async function augmentNotFoundWithCandidates(
 
   if (unitsErr) {
     console.warn("[Layer C] candidate units fetch failed:", unitsErr);
-    // 番号情報なしで候補を返す（matched 後の番号選択 UI は空表示になるが破綻はしない）
   }
 
   const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
@@ -439,9 +403,7 @@ async function augmentNotFoundWithCandidates(
   }
 
   // resolved に候補を反映
-  const masterById = new Map(
-    allItems.map((i) => [i.id as string, i]),
-  );
+  const masterById = new Map(allItems.map((i) => [i.id as string, i]));
 
   for (const item of notFound) {
     const props = proposalsByName.get(item.extractedName) ?? [];
@@ -459,8 +421,7 @@ async function augmentNotFoundWithCandidates(
       return {
         itemId: c.itemId,
         name: c.name,
-        trackingType:
-          (m?.tracking_type as "individual" | "quantity") ?? "individual",
+        trackingType: (m?.tracking_type as "individual" | "quantity") ?? "individual",
         confidence: c.confidence,
         availableUnits: details.map((d) => d.unitNumber),
         availableUnitDetails: details,
@@ -473,9 +434,7 @@ async function augmentNotFoundWithCandidates(
  * LLM 抽出結果をマスタ DB と照合し、正式名称・番号存在を解決する。
  * 確認カード表示前に呼ぶことで、人間の入力ミスを確定前に補完・警告。
  */
-async function resolveAgainstMaster(
-  extraction: CaaFExtractionResult,
-): Promise<ResolvedItem[]> {
+async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<ResolvedItem[]> {
   const supabase = await createServerSupabaseClient();
   const resolved: ResolvedItem[] = [];
 
@@ -555,9 +514,7 @@ async function resolveAgainstMaster(
       unitNumber: u.unit_number as number,
       unitId: u.id as string,
     }));
-    const unitMap = new Map(
-      availableUnitDetails.map((u) => [u.unitNumber, u.unitId]),
-    );
+    const unitMap = new Map(availableUnitDetails.map((u) => [u.unitNumber, u.unitId]));
 
     // 3. 指定番号の存在チェック
     const unitResolutions = item.unitNumbers.map((num) => ({
@@ -598,6 +555,7 @@ async function resolveAgainstMaster(
 
 /**
  * マスタ照合結果を加味した信号色判定。
+ * - return action → red (domain-specific)
  * - not_found / unit_missing → orange
  * - no_unit_specified → yellow
  * - 全 matched → 元の confidence ベース判定
@@ -606,6 +564,7 @@ function determineSignalWithResolution(
   extraction: CaaFExtractionResult,
   resolved: ResolvedItem[],
 ): Signal {
+  if (extraction.action === "return") return "red";
   const baseSignal = determineSignal(extraction);
 
   if (resolved.length === 0) return baseSignal;
@@ -618,17 +577,13 @@ function determineSignalWithResolution(
   return baseSignal;
 }
 
-export async function extractAction(
-  naturalText: string,
-): Promise<{
+export async function extractAction(naturalText: string): Promise<{
   extraction: CaaFExtractionResult;
   signal: Signal;
   resolved: ResolvedItem[];
   resolvedProject: ResolvedProject;
 }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-
-  if (!apiKey || apiKey === "ここにキーを貼る") {
+  if (!isGeminiConfigured()) {
     // フォールバック: デモ解析（マスタ照合なし）
     const { extractFromNaturalText } = await import("@/lib/llm/router");
     const demo = await extractFromNaturalText(naturalText);
@@ -644,8 +599,6 @@ export async function extractAction(
     };
   }
 
-  const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
-
   // Layer B: 上位エイリアスを LLM プロンプトに注入（正規化精度向上）
   const supabase = await createServerSupabaseClient();
   const { data: topAliases } = await supabase
@@ -659,50 +612,10 @@ export async function extractAction(
       ? `\n\n### 過去の入力パターン（この名前で入力されたら対応する正式名に読み替えてください）\n${topAliases.map((a) => `${a.alias} → ${a.canonical_name}`).join("\n")}`
       : "";
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { text: EXTRACTION_PROMPT + aliasContext },
-            { text: `\n\n### ユーザー入力\n${naturalText}` },
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("Gemini API error:", res.status, err);
-    throw new Error(`LLM API エラー (${res.status})`);
-  }
-
-  const data = await res.json();
-
-  // Gemini レスポンスからテキスト部分を抽出
-  const text: string | undefined =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!text) {
-    throw new Error("LLM から有効な応答がありませんでした");
-  }
-
-  // JSON パース + snake_case → camelCase 正規化 + Zod バリデーション
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    console.error("Gemini JSON parse error:", text);
-    throw new Error("LLM の応答を JSON として解析できませんでした");
-  }
+  const parsed = await callGeminiJSON([
+    { text: EXTRACTION_PROMPT + aliasContext },
+    { text: `\n\n### ユーザー入力\n${naturalText}` },
+  ]);
 
   // Gemini が snake_case / 文字列型で返す場合の正規化
   const normalized = normalizeExtraction(parsed);
@@ -810,55 +723,19 @@ export async function confirmCheckoutAction(
 
   // ── エイリアス学習: extractedName ≠ matchedName を自動保存 (D-4: 確定後のみ) ──
   for (const item of resolved) {
-    if (
-      !item.matchedItemId ||
-      !item.matchedName ||
-      item.extractedName === item.matchedName
-    ) {
+    if (!item.matchedItemId || !item.matchedName || item.extractedName === item.matchedName) {
       continue;
     }
-
-    const alias = item.extractedName.toLowerCase();
-    const { data: existing } = await supabase
-      .from("item_name_aliases")
-      .select("id, item_id, use_count")
-      .eq("alias", alias)
-      .maybeSingle();
-
-    if (existing) {
-      if (existing.item_id === item.matchedItemId) {
-        // 同一マッピング → use_count++
-        await supabase
-          .from("item_name_aliases")
-          .update({
-            use_count: (existing.use_count as number) + 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", existing.id);
-      } else {
-        // 別の工具に確定 → 最新の人間判断で上書き
-        await supabase
-          .from("item_name_aliases")
-          .update({
-            item_id: item.matchedItemId,
-            canonical_name: item.matchedName,
-            use_count: 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", existing.id);
-      }
-    } else {
-      // 新規エイリアス
-      await supabase.from("item_name_aliases").insert({
-        alias,
-        item_id: item.matchedItemId,
-        canonical_name: item.matchedName,
-      });
-    }
+    await learnAlias(
+      supabase,
+      { table: "item_name_aliases", foreignKeyColumn: "item_id" },
+      item.extractedName,
+      item.matchedItemId,
+      item.matchedName,
+    );
   }
 
   // ── プロジェクトエイリアス学習 ──
-  // ユーザー入力 site と確定された project の正式名が異なる場合に学習
   if (
     projectId &&
     projectCanonicalName &&
@@ -866,40 +743,13 @@ export async function confirmCheckoutAction(
     extraction.site.trim() !== "" &&
     extraction.site.trim() !== projectCanonicalName
   ) {
-    const siteAlias = extraction.site.trim().toLowerCase();
-    const { data: existingProjAlias } = await supabase
-      .from("project_name_aliases")
-      .select("id, project_id, use_count")
-      .eq("alias", siteAlias)
-      .maybeSingle();
-
-    if (existingProjAlias) {
-      if (existingProjAlias.project_id === projectId) {
-        await supabase
-          .from("project_name_aliases")
-          .update({
-            use_count: (existingProjAlias.use_count as number) + 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", existingProjAlias.id);
-      } else {
-        await supabase
-          .from("project_name_aliases")
-          .update({
-            project_id: projectId,
-            canonical_name: projectCanonicalName,
-            use_count: 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", existingProjAlias.id);
-      }
-    } else {
-      await supabase.from("project_name_aliases").insert({
-        alias: siteAlias,
-        project_id: projectId,
-        canonical_name: projectCanonicalName,
-      });
-    }
+    await learnAlias(
+      supabase,
+      { table: "project_name_aliases", foreignKeyColumn: "project_id" },
+      extraction.site.trim(),
+      projectId,
+      projectCanonicalName,
+    );
   }
 
   return { insertedCount, errors };
@@ -956,71 +806,25 @@ export async function clarifyAction(
   resolvedProject: ResolvedProject;
   summary: string;
 }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "ここにキーを貼る") {
+  if (!isGeminiConfigured()) {
     throw new Error("修正機能には Gemini API キーが必要です");
   }
 
-  const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    cache: "no-store",
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { text: CLARIFICATION_PROMPT },
-            { text: `\n\n### 元の入力\n${originalText}` },
-            {
-              text: `\n\n### 現在の抽出結果\n${JSON.stringify(currentExtraction)}`,
-            },
-            { text: `\n\n### ユーザーの修正指示\n${clarificationText}` },
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("Gemini clarification error:", res.status, err);
-    throw new Error(`LLM API エラー (${res.status})`);
-  }
-
-  const data = await res.json();
-  const text: string | undefined =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!text) {
-    throw new Error("LLM から有効な応答がありませんでした");
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(text) as Record<string, unknown>;
-  } catch {
-    console.error("Gemini clarification JSON parse error:", text);
-    throw new Error("LLM の応答を JSON として解析できませんでした");
-  }
+  const parsed = await callGeminiJSON<Record<string, unknown>>([
+    { text: CLARIFICATION_PROMPT },
+    { text: `\n\n### 元の入力\n${originalText}` },
+    { text: `\n\n### 現在の抽出結果\n${JSON.stringify(currentExtraction)}` },
+    { text: `\n\n### ユーザーの修正指示\n${clarificationText}` },
+  ]);
 
   // summary を抽出してから正規化
-  const summary =
-    typeof parsed.summary === "string" ? parsed.summary : "修正を反映しました";
+  const summary = typeof parsed.summary === "string" ? parsed.summary : "修正を反映しました";
 
   const normalized = normalizeExtraction(parsed);
   const validationResult = CaaFExtractionResultSchema.safeParse(normalized);
 
   if (!validationResult.success) {
-    console.error(
-      "Zod validation error (clarify):",
-      validationResult.error.issues,
-    );
+    console.error("Zod validation error (clarify):", validationResult.error.issues);
     throw new Error("LLM の応答が期待されるスキーマと一致しませんでした");
   }
 

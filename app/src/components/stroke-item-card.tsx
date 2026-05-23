@@ -8,18 +8,10 @@
  */
 
 import type { ResolvedItem } from "@/app/(main)/input/actions";
-
-export type ItemStatus = "pending" | "confirmed" | "skipped" | "error";
-
-export type StrokeItem = {
-  resolved: ResolvedItem;
-  status: ItemStatus;
-  /** ストローク初回抽出時の入力名（修正で上書きされない、エイリアス学習用） */
-  originalExtractedName?: string;
-};
+import type { StrokeItem } from "@/lib/caaf";
 
 type Props = {
-  item: StrokeItem;
+  item: StrokeItem<ResolvedItem>;
   onConfirm: () => void;
   onSkip: () => void;
   onUndoSkip: () => void;
@@ -70,11 +62,7 @@ export function StrokeItemCard({
         <span className="text-body-sm text-text-secondary line-through">
           {resolved.matchedName ?? resolved.extractedName}
         </span>
-        <button
-          type="button"
-          onClick={onUndoSkip}
-          className="text-label-xs text-primary ml-auto"
-        >
+        <button type="button" onClick={onUndoSkip} className="text-label-xs text-primary ml-auto">
           戻す
         </button>
       </div>
@@ -133,9 +121,7 @@ export function StrokeItemCard({
 
       {/* 警告 + 番号選択 UI */}
       {resolved.status === "not_found" && (
-        <div className="text-label-xs text-error">
-          マスタに一致する工具がありません
-        </div>
+        <div className="text-label-xs text-error">マスタに一致する工具がありません</div>
       )}
       {/* LLM 提案候補ピッカー */}
       {resolved.status === "candidates_proposed" && resolved.candidates.length > 0 && (
@@ -169,37 +155,34 @@ export function StrokeItemCard({
       )}
       {resolved.status === "unit_missing" && (
         <div className="flex flex-col gap-xs">
-          <div className="text-label-xs text-error">
-            存在しない番号があります
-          </div>
-          {resolved.availableUnits.length > 0 && (() => {
-            const selected = new Set(
-              resolved.unitResolutions.filter((u) => u.exists).map((u) => u.unitNumber),
-            );
-            const selectable = resolved.availableUnits.filter((n) => !selected.has(n));
-            return selectable.length > 0 ? (
-              <div className="flex items-center gap-xs flex-wrap">
-                <span className="text-label-xs text-text-secondary">代わりの番号:</span>
-                {selectable.map((num) => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => onSelectUnit?.(num)}
-                    className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
-                  >
-                    {num}
-                  </button>
-                ))}
-              </div>
-            ) : null;
-          })()}
+          <div className="text-label-xs text-error">存在しない番号があります</div>
+          {resolved.availableUnits.length > 0 &&
+            (() => {
+              const selected = new Set(
+                resolved.unitResolutions.filter((u) => u.exists).map((u) => u.unitNumber),
+              );
+              const selectable = resolved.availableUnits.filter((n) => !selected.has(n));
+              return selectable.length > 0 ? (
+                <div className="flex items-center gap-xs flex-wrap">
+                  <span className="text-label-xs text-text-secondary">代わりの番号:</span>
+                  {selectable.map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => onSelectUnit?.(num)}
+                      className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                    >
+                      {num}
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })()}
         </div>
       )}
       {resolved.status === "no_unit_specified" && (
         <div className="flex flex-col gap-xs">
-          <div className="text-label-xs text-warning">
-            番号を選択してください
-          </div>
+          <div className="text-label-xs text-warning">番号を選択してください</div>
           {resolved.availableUnits.length > 0 && (
             <div className="flex items-center gap-xs flex-wrap">
               {resolved.availableUnits.map((num) => (
