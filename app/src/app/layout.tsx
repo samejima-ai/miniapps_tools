@@ -41,7 +41,7 @@ export default function RootLayout({
     <html lang="ja" className={`${notoSansJP.variable} ${jetBrainsMono.variable}`}>
       <body className="bg-background text-ink font-sans">
         <Providers>
-          <div className="max-w-mobile mx-auto min-h-screen flex flex-col">{children}</div>
+          <div className="max-w-mobile mx-auto h-[100dvh] flex flex-col">{children}</div>
         </Providers>
       </body>
     </html>

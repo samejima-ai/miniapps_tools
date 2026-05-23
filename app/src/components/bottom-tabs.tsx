@@ -21,7 +21,10 @@ export function BottomTabs() {
   const pathname = usePathname();
 
   return (
-    <nav className="border-t border-divider bg-surface px-lg py-xs flex">
+    <nav
+      className="shrink-0 relative z-20 border-t border-divider bg-surface px-lg py-xs flex"
+      style={{ paddingBottom: "max(0.25rem, env(safe-area-inset-bottom))" }}
+    >
       {tabs.map((tab) => {
         const isActive = pathname.startsWith(tab.href);
         return (
