@@ -9,9 +9,9 @@ const BASE_URL = baseUrlEnv && baseUrlEnv.length > 0 ? baseUrlEnv : "http://loca
 const useOwnDevServer = !baseUrlEnv;
 
 export default defineConfig({
-  testDir: "tests/e2e",
+  // tests/e2e (機能 smoke) と tests/perf (Interaction Cost) を別 project で扱う
+  testDir: "tests",
   outputDir: "playwright-report",
-  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
@@ -22,10 +22,25 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "mobile-chromium",
+      // 機能 smoke (tests/e2e/) — parallel 実行で安定
+      name: "e2e",
+      testDir: "tests/e2e",
+      fullyParallel: true,
+      use: { ...devices["Pixel 7"] },
+    },
+    {
+      // Interaction Cost (tests/perf/) — 計測は parallel と相性が悪い (CPU 競合で
+      // 数値ブレ)、workers:1 + fullyParallel:false で逐次実行
+      name: "perf",
+      testDir: "tests/perf",
+      fullyParallel: false,
       use: { ...devices["Pixel 7"] },
     },
   ],
+  // 両 project が並走するが、project ごとに fullyParallel 設定が尊重される。
+  // e2e のみ走らせたい場合: `pnpm run test:e2e -- --project=e2e`
+  // perf のみ走らせたい場合: `pnpm run test:e2e -- --project=perf`
+  workers: process.env.CI ? 1 : undefined,
   // BASE_URL 指定時は外部 dev サーバーを使うため、Playwright 内で起動しない
   webServer: useOwnDevServer
     ? {
