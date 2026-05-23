@@ -43,12 +43,48 @@ const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models
 const EXTRACTION_PROMPT = `あなたは工具管理システムの入力解析器です。
 ユーザーの自然文から工具の持出・返却情報を抽出してください。
 
+### 入力形式
+ユーザーは LINE のような短いメッセージで入力します。以下のパターンすべてに対応すること：
+- 1行に複数情報: 「バッテリー 2,3番 ブロワ 1番 池下現場」
+- 複数行で1工具ずつ: 各行が工具名・番号・現場・日付・アクション等
+- 工具名と番号が同じ行: 「18Vバッテリー11番」→ name:"18Vバッテリー", unitNumbers:[11]
+- 数量表記: 「はかり1台」「ビス2箱」→ trackingType:"quantity", quantity:1 or 2
+- カジュアルな略称: 「充電ブロアー」「インパクト」「バッテリー」等はそのまま name に入れる
+
+### 無視する行
+- 日付: 「今日」「明日」「5/23」等
+- 曜日: 「月」「火」「月曜」等（1文字の曜日も含む）
+- 時刻: 「6:59」「14:00」等
+- これらは工具名ではないので items に含めない
+
+### アクション判定
+- 「持ち出し」「持出」「借りる」→ action: "checkout"
+- 「返却」「返す」「戻す」→ action: "return"
+- 明示されていなければ action: "checkout"（デフォルト）
+
 ### 必ず守るルール
 - JSON のみ出力する。前置き・解説・markdown は一切付けない
 - 情報が欠損している場合は補完・創作しない。ambiguities に入れる
 - 「全返却」「まとめて返す」等の曖昧な対象指定は action="return" として返し、items は空にする
 - unit_numbers は明示的に番号が書かれている場合のみ抽出する
 - confidence は抽出の確信度（0.0-1.0）
+- 1つの入力に複数工具が含まれる場合、必ずすべて items に含める
+
+### 入力例と期待出力
+
+入力: 「バッテリー 2,3番 ブロワ 1番 池下現場」
+→ items: [{name:"バッテリー",unitNumbers:[2,3]}, {name:"ブロワ",unitNumbers:[1]}], site:"池下現場"
+
+入力:
+「今日
+月
+充電ブロアー
+18Vバッテリー11番
+はかり1台
+持ち出し
+6:59」
+→ items: [{name:"充電ブロアー",trackingType:"individual",unitNumbers:[]}, {name:"18Vバッテリー",unitNumbers:[11]}, {name:"はかり",trackingType:"quantity",quantity:1}], action:"checkout"
+（「今日」「月」「6:59」は日付・曜日・時刻なので無視）
 
 ### 出力JSON形式
 {
