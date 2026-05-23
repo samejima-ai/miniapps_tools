@@ -175,7 +175,7 @@ export default function MasterPage() {
   const [tab, setTab] = useState<MasterTab>("items");
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col min-h-0">
       <div className="px-lg pt-md pb-sm">
         <div className="text-headline-md text-ink mb-sm">マスタ管理</div>
 

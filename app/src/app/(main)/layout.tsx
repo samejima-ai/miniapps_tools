@@ -30,7 +30,7 @@ export default function MainLayout({ children }: { children: ReactNode }) {
   return (
     <>
       <Header />
-      <div className="flex-1 flex flex-col overflow-y-auto">{children}</div>
+      <div className="flex-1 flex flex-col min-h-0">{children}</div>
       <BottomTabs />
     </>
   );

@@ -32,28 +32,27 @@ export function GateScreen() {
   const [supabaseConnected, setSupabaseConnected] = useState(false);
 
   useEffect(() => {
-    // Supabase から社員リスト取得を試みる。失敗時はデモデータ。
+    // Server Action 経由で本番 public.employees から取得。失敗時はデモデータ。
     async function loadEmployees() {
       try {
-        // Supabase 接続チェック: env が未設定なら即フォールバック
         if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
           setEmployees(DEMO_EMPLOYEES);
           return;
         }
 
-        const { createClient } = await import("@/lib/supabase/client");
-        const supabase = createClient();
+        const { fetchActiveEmployees } = await import("@/lib/supabase/employees");
+        const list = await fetchActiveEmployees();
 
-        // MVP: employees テーブルは miniapps_tools スキーマの DDL に含まれないため
-        // Supabase 接続時も常にデモ社員にフォールバックする。
-        // 将来: platform.employees テーブル追加後に実データ取得に切替え。
-        // 現時点では Supabase が接続可能であることの疎通確認のみ実施。
-        const { error } = await supabase.from("items").select("id").limit(1);
-        if (!error) {
-          setSupabaseConnected(true);
+        if (list.length === 0) {
+          console.warn("[Gate] employees empty, fallback to demo");
+          setEmployees(DEMO_EMPLOYEES);
+          return;
         }
-        setEmployees(DEMO_EMPLOYEES);
-      } catch {
+
+        setSupabaseConnected(true);
+        setEmployees(list);
+      } catch (err) {
+        console.warn("[Gate] employees load error, fallback to demo:", err);
         setEmployees(DEMO_EMPLOYEES);
       } finally {
         setLoading(false);

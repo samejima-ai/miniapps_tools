@@ -20,10 +20,21 @@ type Props = {
   item: CurrentlyOut;
   returnMode: boolean;
   selected: boolean;
+  /** 全員スコープ時の保持者名表示。自分スコープ時は省略 */
+  holderName?: string | null;
+  /** クイック返却（単発、確認なし）。非 returnMode 時のみ有効 */
+  onQuickReturn?: (item: CurrentlyOut) => void;
   onToggleSelect?: (unitId: string) => void;
 };
 
-export function UnitCard({ item, returnMode, selected, onToggleSelect }: Props) {
+export function UnitCard({
+  item,
+  returnMode,
+  selected,
+  holderName,
+  onQuickReturn,
+  onToggleSelect,
+}: Props) {
   const isOverdue = item.daysOut >= 3;
   const isSevere = item.daysOut >= 7;
 
@@ -72,13 +83,19 @@ export function UnitCard({ item, returnMode, selected, onToggleSelect }: Props) 
 
       {/* 工具情報 */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-sm">
+        <div className="flex items-center gap-sm flex-wrap">
           <span className="text-body-md font-bold text-ink truncate">{item.itemName}</span>
           {/* unit_number バッジ */}
           <span className="bg-primary text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm flex-shrink-0">
             #{item.unitNumber}
           </span>
         </div>
+        {/* 保持者名（全員スコープ時のみ） */}
+        {holderName && (
+          <div className="text-label-xs text-text-secondary mt-0.5">
+            保持者: {holderName}
+          </div>
+        )}
       </div>
 
       {/* 経過日数バッジ (F7) */}
@@ -90,6 +107,18 @@ export function UnitCard({ item, returnMode, selected, onToggleSelect }: Props) 
         >
           {item.daysOut}日
         </div>
+      )}
+
+      {/* クイック返却ボタン（非 returnMode 時のみ） */}
+      {!returnMode && onQuickReturn && (
+        <button
+          type="button"
+          onClick={() => onQuickReturn(item)}
+          className="bg-success text-surface text-label-xs font-bold px-md py-xs rounded-md min-h-[36px] shadow-cta hover:opacity-90 transition-opacity flex-shrink-0"
+          aria-label={`${item.itemName} #${item.unitNumber} を返却`}
+        >
+          返却
+        </button>
       )}
     </div>
   );

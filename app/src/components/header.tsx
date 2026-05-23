@@ -16,7 +16,7 @@ export function Header() {
   if (!currentUser) return null;
 
   return (
-    <header className="bg-primary px-lg py-md flex items-center justify-between">
+    <header className="shrink-0 relative z-20 bg-primary px-lg py-md flex items-center justify-between">
       <div className="flex items-center gap-sm">
         {/* アバター: 名前の頭文字 */}
         <div className="w-8 h-8 rounded-full bg-primary-light text-primary-dark flex items-center justify-center text-body-sm font-bold">
