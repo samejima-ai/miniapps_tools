@@ -5,14 +5,18 @@
  *
  * DESIGN.md card-signal: 信号色で境界線色が動的変化。
  * - 🟢 緑: 高確信 × 全一致 → Phase1 自動化候補（MVP は人がタップ）
- * - 🟡 黄: 中確信 → 該当項目ハイライト
+ * - 🟡 黄: 中確信 or 番号未指定 → 該当項目ハイライト
  * - 🟠 橙: 低確信 or マスタ未一致
  * - 🔴 赤: 対象不特定 → 確定不可
  *
  * Phase 0 = 全件確認。色は表示のみ、自動 INSERT しない (D-3/D-4)。
+ *
+ * マスタ照合: LLM 抽出名 → DB 正式名称を表示。
+ * 番号存在チェック: 存在しない番号は警告表示。
  */
 
 import type { CaaFExtractionResult, Signal } from "@/types";
+import type { ResolvedItem } from "@/app/(main)/input/actions";
 
 const SIGNAL_STYLES: Record<Signal, { border: string; bg: string; label: string }> = {
   green: {
@@ -40,6 +44,7 @@ const SIGNAL_STYLES: Record<Signal, { border: string; bg: string; label: string 
 type Props = {
   extraction: CaaFExtractionResult;
   signal: Signal;
+  resolved: ResolvedItem[];
   onConfirm: () => void;
   onEdit: () => void;
   onRedirectToReturn?: () => void;
@@ -49,14 +54,21 @@ type Props = {
 export function SignalCard({
   extraction,
   signal,
+  resolved,
   onConfirm,
   onEdit,
   onRedirectToReturn,
   confirming,
 }: Props) {
   const style = SIGNAL_STYLES[signal];
+  const hasBlockingIssue = resolved.some(
+    (r) => r.status === "not_found" || r.status === "unit_missing" || r.status === "no_unit_specified",
+  );
   const canConfirm =
-    signal !== "red" && extraction.items.length > 0 && extraction.action !== "return";
+    signal !== "red" &&
+    extraction.items.length > 0 &&
+    extraction.action !== "return" &&
+    !hasBlockingIssue;
 
   return (
     <div
@@ -89,28 +101,81 @@ export function SignalCard({
         </div>
       )}
 
-      {/* 抽出アイテム一覧 */}
-      {extraction.items.length > 0 ? (
+      {/* マスタ照合済みアイテム一覧 */}
+      {resolved.length > 0 ? (
+        <div className="flex flex-col gap-sm">
+          {resolved.map((item, i) => (
+            <div key={`${item.extractedName}-${i}`} className="flex flex-col gap-xs">
+              {/* メイン行: 正式名称 + 番号バッジ + confidence */}
+              <div className="flex items-center gap-sm flex-wrap">
+                {item.matchedName ? (
+                  <span className="text-body-md text-ink font-bold">{item.matchedName}</span>
+                ) : (
+                  <span className="text-body-md text-error font-bold line-through">
+                    {item.extractedName}
+                  </span>
+                )}
+
+                {/* 番号バッジ: 存在=primary, 不在=error */}
+                {item.unitResolutions.length > 0 && (
+                  <div className="flex gap-xs">
+                    {item.unitResolutions.map((u) => (
+                      <span
+                        key={u.unitNumber}
+                        className={`text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm ${
+                          u.exists ? "bg-primary" : "bg-error"
+                        }`}
+                      >
+                        #{u.unitNumber}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {item.quantity != null && (
+                  <span className="text-body-sm text-text-secondary">× {item.quantity}</span>
+                )}
+
+                <span className="text-label-xs text-text-secondary font-mono ml-auto">
+                  {Math.round(item.confidence * 100)}%
+                </span>
+              </div>
+
+              {/* 補完表示: LLM抽出名 → マスタ正式名（異なる場合） */}
+              {item.matchedName && item.matchedName !== item.extractedName && (
+                <div className="text-label-xs text-text-secondary pl-xs">
+                  入力: {item.extractedName} → {item.matchedName}
+                </div>
+              )}
+
+              {/* 警告: マスタ未一致 */}
+              {item.status === "not_found" && (
+                <div className="text-label-xs text-error pl-xs">
+                  マスタに一致する工具がありません
+                </div>
+              )}
+
+              {/* 警告: 番号不在 */}
+              {item.status === "unit_missing" && (
+                <div className="text-label-xs text-error pl-xs">
+                  存在しない番号があります（利用可能: {item.availableUnits.join(", ")}番）
+                </div>
+              )}
+
+              {/* 警告: 個体管理なのに番号未指定 */}
+              {item.status === "no_unit_specified" && (
+                <div className="text-label-xs text-warning pl-xs">
+                  番号を指定してください（利用可能: {item.availableUnits.join(", ")}番）
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : extraction.items.length > 0 ? (
         <div className="flex flex-col gap-sm">
           {extraction.items.map((item, i) => (
             <div key={`${item.name}-${i}`} className="flex items-center gap-sm">
               <span className="text-body-md text-ink font-bold">{item.name}</span>
-              {item.unitNumbers.length > 0 && (
-                <div className="flex gap-xs">
-                  {item.unitNumbers.map((num) => (
-                    <span
-                      key={num}
-                      className="bg-primary text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm"
-                    >
-                      #{num}
-                    </span>
-                  ))}
-                </div>
-              )}
-              {item.quantity != null && (
-                <span className="text-body-sm text-text-secondary">× {item.quantity}</span>
-              )}
-              {/* confidence バッジ（表示のみ, D-3） */}
               <span className="text-label-xs text-text-secondary font-mono ml-auto">
                 {Math.round(item.confidence * 100)}%
               </span>

@@ -15,6 +15,7 @@
 import { SignalCard } from "@/components/signal-card";
 import { useUser } from "@/lib/user-context";
 import { confirmCheckoutAction, extractAction } from "./actions";
+import type { ResolvedItem } from "./actions";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
@@ -28,6 +29,7 @@ export default function InputPage() {
   const [cardState, setCardState] = useState<CardState>("idle");
   const [extraction, setExtraction] = useState<CaaFExtractionResult | null>(null);
   const [signal, setSignal] = useState<Signal | null>(null);
+  const [resolved, setResolved] = useState<ResolvedItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
 
@@ -42,6 +44,7 @@ export default function InputPage() {
       const result = await extractAction(inputText);
       setExtraction(result.extraction);
       setSignal(result.signal);
+      setResolved(result.resolved);
 
       // action=return の場合は返却モードへ誘導 (D-5)
       if (result.extraction.action === "return") {
@@ -63,6 +66,7 @@ export default function InputPage() {
     try {
       const result = await confirmCheckoutAction(
         extraction,
+        resolved,
         currentUser.id,
         null, // holderId: 自分持出。代理入力時は holderNote から解決（将来）
       );
@@ -84,6 +88,7 @@ export default function InputPage() {
         setInputText("");
         setExtraction(null);
         setSignal(null);
+        setResolved([]);
         setCardState("idle");
         router.push("/list");
       }, 1000);
@@ -100,6 +105,7 @@ export default function InputPage() {
     setCardState("idle");
     setExtraction(null);
     setSignal(null);
+    setResolved([]);
   }, []);
 
   // 返却モードへリダイレクト
@@ -107,6 +113,7 @@ export default function InputPage() {
     setInputText("");
     setExtraction(null);
     setSignal(null);
+    setResolved([]);
     setCardState("idle");
     router.push("/list");
   }, [router]);
@@ -159,6 +166,7 @@ export default function InputPage() {
           <SignalCard
             extraction={extraction}
             signal={signal}
+            resolved={resolved}
             onConfirm={handleConfirm}
             onEdit={handleEdit}
             onRedirectToReturn={handleRedirectToReturn}
