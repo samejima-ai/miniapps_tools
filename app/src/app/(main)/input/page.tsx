@@ -19,6 +19,7 @@ import {
   clarifyAction,
   extractAction,
   type ResolvedItem,
+  type ResolvedProject,
 } from "./actions";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { useRouter } from "next/navigation";
@@ -48,6 +49,7 @@ type Stroke = {
   error: string | null;
   clarifications: Clarification[];
   isClarifying: boolean;
+  resolvedProject: ResolvedProject | null;
 };
 
 /** マスタ照合済みアイテムのキーを生成（状態マージ用） */
@@ -154,6 +156,7 @@ export default function InputPage() {
           resolvedToSave,
           currentUser.id,
           null,
+          stroke.resolvedProject?.projectId ?? null,
         );
 
         updateStroke(strokeId, {
@@ -268,6 +271,7 @@ export default function InputPage() {
               items: newItems,
               isClarifying: false,
               clarifications,
+              resolvedProject: result.resolvedProject,
             };
           }),
         );
@@ -301,6 +305,7 @@ export default function InputPage() {
           error: null,
           clarifications: [],
           isClarifying: false,
+          resolvedProject: null,
         },
       ]);
 
@@ -321,6 +326,7 @@ export default function InputPage() {
                   signal: result.signal,
                   items,
                   phase: "reviewing" as const,
+                  resolvedProject: result.resolvedProject,
                 }
               : s,
           ),
@@ -483,6 +489,7 @@ export default function InputPage() {
           signal: result.signal,
           items,
           phase: "reviewing",
+          resolvedProject: result.resolvedProject,
         });
       } catch (err) {
         updateStroke(strokeId, {
@@ -592,12 +599,24 @@ export default function InputPage() {
                     {stroke.phase === "reviewing" && stroke.extraction && !stroke.isClarifying && (
                       <div className="flex flex-col gap-sm">
                         {/* ヘッダー */}
-                        <div className="flex items-center gap-sm text-body-sm">
+                        <div className="flex items-center gap-sm text-body-sm flex-wrap">
                           {stroke.extraction.site && (
                             <span className="text-ink font-bold">
                               {stroke.extraction.site}
                             </span>
                           )}
+                          {/* 案件マッチング結果 */}
+                          {stroke.resolvedProject?.status === "matched" && (
+                            <span className="text-label-xs bg-success/10 text-success font-bold px-xs py-0.5 rounded-sm">
+                              ✓ {stroke.resolvedProject.projectName}
+                            </span>
+                          )}
+                          {stroke.resolvedProject?.status === "not_found" &&
+                            stroke.extraction.site && (
+                              <span className="text-label-xs bg-warning/10 text-warning font-bold px-xs py-0.5 rounded-sm">
+                                案件未一致
+                              </span>
+                            )}
                           <span className="text-text-secondary">
                             — {stroke.items.length}件
                           </span>

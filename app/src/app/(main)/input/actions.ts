@@ -11,9 +11,49 @@
  */
 
 import { determineSignal } from "@/lib/llm/router";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createPublicServerClient, createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { CaaFExtractionResultSchema } from "@/types";
+
+/** LLM が抽出した site 文字列を本番 projects テーブルと照合した結果 */
+export type ResolvedProject = {
+  /** マッチした最有力候補（複数候補なら先頭、未一致なら null） */
+  projectId: string | null;
+  projectName: string | null;
+  /** site が指定されなかった or マッチ 0 件 */
+  status: "matched" | "not_found" | "no_site";
+};
+
+/**
+ * LLM 抽出 site → public.projects.name 部分一致照合。
+ * 削除済 (deleted_at) は除外。最有力1件を返す。
+ */
+async function resolveProjectFromSite(siteName: string | null): Promise<ResolvedProject> {
+  if (!siteName || siteName.trim() === "") {
+    return { projectId: null, projectName: null, status: "no_site" };
+  }
+  const supabase = await createPublicServerClient();
+  const { data, error } = await supabase
+    .from("projects")
+    .select("project_id, name")
+    .ilike("name", `%${siteName.trim()}%`)
+    .is("deleted_at", null)
+    .limit(5);
+
+  if (error || !data || data.length === 0) {
+    return { projectId: null, projectName: null, status: "not_found" };
+  }
+
+  const top = data[0];
+  if (!top) {
+    return { projectId: null, projectName: null, status: "not_found" };
+  }
+  return {
+    projectId: top.project_id as string,
+    projectName: top.name as string,
+    status: "matched",
+  };
+}
 
 /**
  * マスタ照合済みアイテム — 信号色カードに表示する。
@@ -283,14 +323,23 @@ function determineSignalWithResolution(
 
 export async function extractAction(
   naturalText: string,
-): Promise<{ extraction: CaaFExtractionResult; signal: Signal; resolved: ResolvedItem[] }> {
+): Promise<{
+  extraction: CaaFExtractionResult;
+  signal: Signal;
+  resolved: ResolvedItem[];
+  resolvedProject: ResolvedProject;
+}> {
   const apiKey = process.env.GEMINI_API_KEY;
 
   if (!apiKey || apiKey === "ここにキーを貼る") {
     // フォールバック: デモ解析（マスタ照合なし）
     const { extractFromNaturalText } = await import("@/lib/llm/router");
     const demo = await extractFromNaturalText(naturalText);
-    return { ...demo, resolved: [] };
+    return {
+      ...demo,
+      resolved: [],
+      resolvedProject: { projectId: null, projectName: null, status: "no_site" },
+    };
   }
 
   const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
@@ -366,9 +415,11 @@ export async function extractAction(
 
   // マスタ照合: 正式名称 + 番号存在を事前解決
   const resolved = await resolveAgainstMaster(extraction);
+  // 案件照合: 本番 public.projects と部分一致
+  const resolvedProject = await resolveProjectFromSite(extraction.site);
   const signal = determineSignalWithResolution(extraction, resolved);
 
-  return { extraction, signal, resolved };
+  return { extraction, signal, resolved, resolvedProject };
 }
 
 /**
@@ -384,6 +435,7 @@ export async function confirmCheckoutAction(
   resolved: ResolvedItem[],
   movedBy: string,
   holderId: string | null,
+  projectId: string | null = null,
 ): Promise<{ insertedCount: number; errors: string[] }> {
   const supabase = await createServerSupabaseClient();
   const errors: string[] = [];
@@ -411,7 +463,7 @@ export async function confirmCheckoutAction(
           movement_type: extraction.action,
           from_location_id: null,
           to_location_id: null,
-          project_id: null,
+          project_id: projectId,
           holder_id: holderId ?? movedBy,
           moved_by: movedBy,
           source: "caaf",
@@ -553,6 +605,7 @@ export async function clarifyAction(
   extraction: CaaFExtractionResult;
   signal: Signal;
   resolved: ResolvedItem[];
+  resolvedProject: ResolvedProject;
   summary: string;
 }> {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -625,7 +678,8 @@ export async function clarifyAction(
 
   const extraction = validationResult.data;
   const resolved = await resolveAgainstMaster(extraction);
+  const resolvedProject = await resolveProjectFromSite(extraction.site);
   const signal = determineSignalWithResolution(extraction, resolved);
 
-  return { extraction, signal, resolved, summary };
+  return { extraction, signal, resolved, resolvedProject, summary };
 }
