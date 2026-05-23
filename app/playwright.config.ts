@@ -3,8 +3,10 @@ import { defineConfig, devices } from "@playwright/test";
 // BASE_URL を env で上書き可能。デフォルトは pnpm run dev が立てる :3000。
 // 既存 dev サーバー (preview_start などで起動済) を再利用したい場合は
 // `BASE_URL=http://localhost:XXXXX pnpm run test:e2e` で指定できる。
-const BASE_URL = process.env.BASE_URL ?? "http://localhost:3000";
-const useOwnDevServer = !process.env.BASE_URL;
+// 空文字 (BASE_URL=) は未指定扱い。
+const baseUrlEnv = process.env.BASE_URL?.trim();
+const BASE_URL = baseUrlEnv && baseUrlEnv.length > 0 ? baseUrlEnv : "http://localhost:3000";
+const useOwnDevServer = !baseUrlEnv;
 
 export default defineConfig({
   testDir: "tests/e2e",

@@ -22,20 +22,24 @@ test.describe("E2E-001: Gate to List", () => {
     await expect(page.getByText("社員を選択")).toBeVisible({ timeout: 10_000 });
 
     // 表示されている社員ボタンの 1 件目を選択
-    // (ボタンは「アバター + 名前」構造。最初のボタンの名前テキストを取得)
+    // (ボタン構造は「div(頭文字アバター) + span(社員名)」)
     const firstEmployeeBtn = page.getByRole("button").filter({ hasText: /^.+$/ }).first();
     await expect(firstEmployeeBtn).toBeVisible();
 
-    const employeeName = (await firstEmployeeBtn.textContent())?.trim() ?? "";
+    // アバター頭文字が混ざらないよう、名前 span のみから取得
+    const nameSpan = firstEmployeeBtn.locator("span").last();
+    const employeeName = (await nameSpan.textContent())?.trim() ?? "";
     expect(employeeName.length).toBeGreaterThan(0);
 
     await firstEmployeeBtn.click();
 
     // ── 一覧画面の検出 ──
-    // ヘッダーに「工具管理」+ 選択した社員名が出る (社員名は header.tsx で表示)
     await expect(page.getByText("工具管理")).toBeVisible({ timeout: 5_000 });
 
-    // タブバーの「一覧」がアクティブで、「入力」「マスタ」も存在
+    // ヘッダーに選択した社員名が表示される (回帰検知)
+    await expect(page.getByText(employeeName)).toBeVisible();
+
+    // タブバーの「一覧」「入力」「マスタ」が表示される
     await expect(page.getByRole("link", { name: /一覧/ })).toBeVisible();
     await expect(page.getByRole("link", { name: /入力/ })).toBeVisible();
     await expect(page.getByRole("link", { name: /マスタ/ })).toBeVisible();
