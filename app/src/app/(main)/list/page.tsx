@@ -186,7 +186,7 @@ export default function ListPage() {
   }, [selectedIds, currentUser, filteredItems, exitReturnMode]);
 
   return (
-    <div className="flex-1 flex flex-col">
+    <div className="flex-1 flex flex-col min-h-0">
       {/* スコープセグメント + 返却モード */}
       <div className="px-lg pt-md pb-sm flex items-center gap-sm">
         <div className="flex border border-divider rounded-md overflow-hidden">
