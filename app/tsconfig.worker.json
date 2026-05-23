@@ -4,5 +4,7 @@
     "lib": ["esnext", "webworker"],
     "types": ["@serwist/next/typings"]
   },
-  "include": ["src/app/sw.ts"]
+  "include": ["src/app/sw.ts"],
+  "// exclude を空配列で上書き": "tsconfig.json 側で src/app/sw.ts を exclude しているが、それがここまで継承されると include が無効化される。worker 専用評価のため exclude をリセット。",
+  "exclude": []
 }
