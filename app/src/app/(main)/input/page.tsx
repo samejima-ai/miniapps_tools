@@ -13,8 +13,8 @@
  */
 
 import { SignalCard } from "@/components/signal-card";
-import { extractFromNaturalText } from "@/lib/llm/router";
 import { useUser } from "@/lib/user-context";
+import { confirmCheckoutAction, extractAction } from "./actions";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
@@ -39,7 +39,7 @@ export default function InputPage() {
     setError(null);
 
     try {
-      const result = await extractFromNaturalText(inputText);
+      const result = await extractAction(inputText);
       setExtraction(result.extraction);
       setSignal(result.signal);
 
@@ -61,9 +61,15 @@ export default function InputPage() {
 
     setConfirming(true);
     try {
-      // TODO: マスタ参照解決（item name → item_id, unit_number → unit_id）が
-      // 実装されるまで DB 書き込みは行わない。デモモードでは UI 確認のみ。
-      // マスタ解決の実装後にこのガードを外し、insertMovement を有効化する。
+      const result = await confirmCheckoutAction(
+        extraction,
+        currentUser.id,
+        null, // holderId: 自分持出。代理入力時は holderNote から解決（将来）
+      );
+
+      if (result.errors.length > 0) {
+        setError(result.errors.join("\n"));
+      }
 
       setCardState("confirmed");
 

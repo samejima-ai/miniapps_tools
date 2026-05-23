@@ -29,6 +29,7 @@ export function GateScreen() {
   const { selectUser } = useUser();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
+  const [supabaseConnected, setSupabaseConnected] = useState(false);
 
   useEffect(() => {
     // Supabase から社員リスト取得を試みる。失敗時はデモデータ。
@@ -47,10 +48,9 @@ export function GateScreen() {
         // Supabase 接続時も常にデモ社員にフォールバックする。
         // 将来: platform.employees テーブル追加後に実データ取得に切替え。
         // 現時点では Supabase が接続可能であることの疎通確認のみ実施。
-        try {
-          await supabase.from("items").select("id").limit(1);
-        } catch {
-          // 接続失敗は無視
+        const { error } = await supabase.from("items").select("id").limit(1);
+        if (!error) {
+          setSupabaseConnected(true);
         }
         setEmployees(DEMO_EMPLOYEES);
       } catch {
@@ -105,7 +105,7 @@ export function GateScreen() {
 
       {/* 情報 */}
       <div className="text-label-xs text-text-secondary text-center">
-        {employees === DEMO_EMPLOYEES ? "デモモード（Supabase 未接続）" : ""}
+        {supabaseConnected ? "Supabase 接続済（デモ社員）" : "デモモード（Supabase 未接続）"}
       </div>
     </main>
   );
