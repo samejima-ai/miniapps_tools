@@ -1,72 +1,149 @@
 "use client";
 
 /**
- * Input Page — Chat UI（自然文→構造化→確定→リセット）
+ * Input Page — Chat UI v2 ストローク対話モデル
  *
- * LINE と同じノリの自然文入力。チャット形式で対話完結。
- * 送信 → 解析 → 確認カード → 確定 → 次の入力へ。
+ * 1ストローク = 入力→解析→個別確認→登録完了の対話の塊。
+ * 各アイテムを個別に確定/スキップでき、全件確定で一括操作も可能。
+ * ストローク完了後はリセットして次の入力へ。
  *
  * Phase 0 = 全件確認。自動 INSERT しない (D-4)。
  * LLM は抽出器、欠損補完しない (D-5)。
  */
 
-import { SignalCard } from "@/components/signal-card";
+import { StrokeItemCard } from "@/components/stroke-item-card";
+import type { StrokeItem } from "@/components/stroke-item-card";
 import { useUser } from "@/lib/user-context";
 import { confirmCheckoutAction, extractAction } from "./actions";
-import type { ResolvedItem } from "./actions";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type ChatEntry = {
+type StrokePhase = "extracting" | "reviewing" | "saving" | "done" | "error";
+
+type StrokeResult = {
+  insertedCount: number;
+  skippedCount: number;
+  errors: string[];
+};
+
+type Stroke = {
   id: string;
   userText: string;
   extraction: CaaFExtractionResult | null;
   signal: Signal | null;
-  resolved: ResolvedItem[];
-  status: "sending" | "reviewing" | "confirming" | "confirmed" | "error";
+  items: StrokeItem[];
+  phase: StrokePhase;
+  result: StrokeResult | null;
   error: string | null;
-  insertedCount: number;
 };
 
 export default function InputPage() {
   const { currentUser } = useUser();
   const router = useRouter();
-  const [entries, setEntries] = useState<ChatEntry[]>([]);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [inputText, setInputText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const entriesRef = useRef(entries);
-  entriesRef.current = entries;
+  const strokesRef = useRef(strokes);
+  strokesRef.current = strokes;
   const composingRef = useRef(false);
+  const savingRef = useRef<Set<string>>(new Set());
 
   // 新メッセージ追加時に自動スクロール
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [entries]);
+  }, [strokes]);
 
-  const updateEntry = useCallback((id: string, patch: Partial<ChatEntry>) => {
-    setEntries((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
+  const updateStroke = useCallback((id: string, patch: Partial<Stroke>) => {
+    setStrokes((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   }, []);
 
-  // 送信: LLM 抽出
+  // 確定済みアイテムを INSERT する
+  const saveConfirmedItems = useCallback(
+    async (strokeId: string) => {
+      if (savingRef.current.has(strokeId)) return;
+      savingRef.current.add(strokeId);
+
+      const stroke = strokesRef.current.find((s) => s.id === strokeId);
+      if (!stroke?.extraction || !currentUser) {
+        savingRef.current.delete(strokeId);
+        return;
+      }
+
+      const confirmed = stroke.items.filter((i) => i.status === "confirmed");
+      const skippedCount = stroke.items.filter((i) => i.status === "skipped").length;
+
+      if (confirmed.length === 0) {
+        updateStroke(strokeId, {
+          phase: "done",
+          result: { insertedCount: 0, skippedCount, errors: [] },
+        });
+        savingRef.current.delete(strokeId);
+        return;
+      }
+
+      updateStroke(strokeId, { phase: "saving" });
+
+      try {
+        const resolvedToSave = confirmed.map((i) => i.resolved);
+        const result = await confirmCheckoutAction(
+          stroke.extraction,
+          resolvedToSave,
+          currentUser.id,
+          null,
+        );
+
+        updateStroke(strokeId, {
+          phase: "done",
+          result: {
+            insertedCount: result.insertedCount,
+            skippedCount,
+            errors: result.errors,
+          },
+        });
+      } catch (err) {
+        updateStroke(strokeId, {
+          error: err instanceof Error ? err.message : "登録に失敗しました",
+          phase: "error",
+        });
+      } finally {
+        savingRef.current.delete(strokeId);
+      }
+    },
+    [currentUser, updateStroke],
+  );
+
+  // 全アイテムが決定（pending なし）→ 自動保存トリガー
+  useEffect(() => {
+    for (const stroke of strokes) {
+      if (stroke.phase !== "reviewing") continue;
+      const hasPending = stroke.items.some((i) => i.status === "pending");
+      if (!hasPending && stroke.items.length > 0) {
+        saveConfirmedItems(stroke.id);
+        break;
+      }
+    }
+  }, [strokes, saveConfirmedItems]);
+
+  // ── 送信: LLM 抽出 ──
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
     if (!text) return;
 
     const id = crypto.randomUUID();
-    setEntries((prev) => [
+    setStrokes((prev) => [
       ...prev,
       {
         id,
         userText: text,
         extraction: null,
         signal: null,
-        resolved: [],
-        status: "sending" as const,
+        items: [],
+        phase: "extracting" as const,
+        result: null,
         error: null,
-        insertedCount: 0,
       },
     ]);
     setInputText("");
@@ -74,95 +151,124 @@ export default function InputPage() {
 
     try {
       const result = await extractAction(text);
-      updateEntry(id, {
-        extraction: result.extraction,
-        signal: result.signal,
-        resolved: result.resolved,
-        status: "reviewing",
-      });
+      const items: StrokeItem[] = result.resolved.map((r) => ({
+        resolved: r,
+        status: "pending" as const,
+      }));
+
+      setStrokes((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, extraction: result.extraction, signal: result.signal, items, phase: "reviewing" as const }
+            : s,
+        ),
+      );
     } catch (err) {
-      updateEntry(id, {
+      updateStroke(id, {
         error: err instanceof Error ? err.message : "抽出に失敗しました",
-        status: "error",
+        phase: "error",
       });
     }
-  }, [inputText, updateEntry]);
+  }, [inputText, updateStroke]);
 
-  // 確定: movement INSERT
-  const handleConfirm = useCallback(
-    async (entryId: string) => {
-      const entry = entriesRef.current.find((e) => e.id === entryId);
-      if (!entry?.extraction || !currentUser) return;
-
-      updateEntry(entryId, { status: "confirming" });
-
-      try {
-        const result = await confirmCheckoutAction(
-          entry.extraction,
-          entry.resolved,
-          currentUser.id,
-          null,
+  // ── 個別確定 ──
+  const handleConfirmItem = useCallback((strokeId: string, itemIndex: number) => {
+    setStrokes((prev) =>
+      prev.map((s) => {
+        if (s.id !== strokeId) return s;
+        const items = s.items.map((item, i) =>
+          i === itemIndex ? { ...item, status: "confirmed" as const } : item,
         );
+        return { ...s, items };
+      }),
+    );
+  }, []);
 
-        if (result.insertedCount === 0) {
-          updateEntry(entryId, {
-            error: result.errors.join("\n"),
-            status: "error",
-          });
-          return;
-        }
+  // ── 個別スキップ ──
+  const handleSkipItem = useCallback((strokeId: string, itemIndex: number) => {
+    setStrokes((prev) =>
+      prev.map((s) => {
+        if (s.id !== strokeId) return s;
+        const items = s.items.map((item, i) =>
+          i === itemIndex ? { ...item, status: "skipped" as const } : item,
+        );
+        return { ...s, items };
+      }),
+    );
+  }, []);
 
-        updateEntry(entryId, {
-          status: "confirmed",
-          insertedCount: result.insertedCount,
-          error: result.errors.length > 0 ? result.errors.join("\n") : null,
+  // ── スキップ取消 ──
+  const handleUndoSkip = useCallback((strokeId: string, itemIndex: number) => {
+    setStrokes((prev) =>
+      prev.map((s) => {
+        if (s.id !== strokeId) return s;
+        const items = s.items.map((item, i) =>
+          i === itemIndex ? { ...item, status: "pending" as const } : item,
+        );
+        return { ...s, items };
+      }),
+    );
+  }, []);
+
+  // ── 全件確定（matched のみ確定、それ以外はスキップ） ──
+  const handleConfirmAll = useCallback((strokeId: string) => {
+    setStrokes((prev) =>
+      prev.map((s) => {
+        if (s.id !== strokeId) return s;
+        const items = s.items.map((item) => {
+          if (item.status !== "pending") return item;
+          if (item.resolved.status === "matched") {
+            return { ...item, status: "confirmed" as const };
+          }
+          return { ...item, status: "skipped" as const };
         });
-      } catch (err) {
-        updateEntry(entryId, {
-          error: err instanceof Error ? err.message : "登録に失敗しました",
-          status: "error",
-        });
-      }
-    },
-    [currentUser, updateEntry],
-  );
+        return { ...s, items };
+      }),
+    );
+    // useEffect が自動保存をトリガーする
+  }, []);
 
-  // 修正: テキストを入力欄に戻す
-  const handleEdit = useCallback((entryId: string) => {
-    const entry = entriesRef.current.find((e) => e.id === entryId);
-    if (!entry) return;
-    setInputText(entry.userText);
-    setEntries((prev) => prev.filter((e) => e.id !== entryId));
+  // ── 修正: テキストを入力欄に戻す ──
+  const handleEdit = useCallback((strokeId: string) => {
+    const stroke = strokesRef.current.find((s) => s.id === strokeId);
+    if (!stroke) return;
+    setInputText(stroke.userText);
+    setStrokes((prev) => prev.filter((s) => s.id !== strokeId));
     inputRef.current?.focus();
   }, []);
 
-  // 再試行: 同じテキストで再抽出
+  // ── 再試行 ──
   const handleRetry = useCallback(
-    async (entryId: string) => {
-      const entry = entriesRef.current.find((e) => e.id === entryId);
-      if (!entry) return;
+    async (strokeId: string) => {
+      const stroke = strokesRef.current.find((s) => s.id === strokeId);
+      if (!stroke) return;
 
-      updateEntry(entryId, { status: "sending", error: null });
+      updateStroke(strokeId, { phase: "extracting", error: null, items: [] });
 
       try {
-        const result = await extractAction(entry.userText);
-        updateEntry(entryId, {
+        const result = await extractAction(stroke.userText);
+        const items: StrokeItem[] = result.resolved.map((r) => ({
+          resolved: r,
+          status: "pending" as const,
+        }));
+
+        updateStroke(strokeId, {
           extraction: result.extraction,
           signal: result.signal,
-          resolved: result.resolved,
-          status: "reviewing",
+          items,
+          phase: "reviewing",
         });
       } catch (err) {
-        updateEntry(entryId, {
+        updateStroke(strokeId, {
           error: err instanceof Error ? err.message : "抽出に失敗しました",
-          status: "error",
+          phase: "error",
         });
       }
     },
-    [updateEntry],
+    [updateStroke],
   );
 
-  // Enter で送信（IME 変換中は除外）
+  // ── Enter で送信（IME 変換中は除外） ──
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       if (
@@ -178,7 +284,7 @@ export default function InputPage() {
     [handleSend],
   );
 
-  // テキスト変更 + 高さ自動調整
+  // ── テキスト変更 + 高さ自動調整 ──
   const handleTextChange = useCallback(
     (e: React.ChangeEvent<HTMLTextAreaElement>) => {
       setInputText(e.target.value);
@@ -193,7 +299,7 @@ export default function InputPage() {
     <div className="flex-1 flex flex-col min-h-0">
       {/* チャットエリア */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-md py-md">
-        {entries.length === 0 ? (
+        {strokes.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-text-secondary gap-sm">
             <div className="text-body-sm text-center">
               LINE と同じノリで入力してください
@@ -204,13 +310,13 @@ export default function InputPage() {
           </div>
         ) : (
           <div className="flex flex-col gap-lg">
-            {entries.map((entry) => (
-              <div key={entry.id} className="flex flex-col gap-sm">
+            {strokes.map((stroke) => (
+              <div key={stroke.id} className="flex flex-col gap-sm">
                 {/* ユーザーメッセージ（右寄せ） */}
                 <div className="flex justify-end">
                   <div className="bg-primary text-surface rounded-2xl rounded-br-sm px-md py-sm max-w-[80%]">
                     <div className="text-body-sm whitespace-pre-wrap">
-                      {entry.userText}
+                      {stroke.userText}
                     </div>
                   </div>
                 </div>
@@ -218,53 +324,164 @@ export default function InputPage() {
                 {/* システム応答（左寄せ） */}
                 <div className="flex justify-start">
                   <div className="max-w-[95%] w-full">
-                    {entry.status === "sending" && (
+                    {/* 解析中 */}
+                    {stroke.phase === "extracting" && (
                       <div className="flex items-center gap-sm py-sm text-primary">
                         <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                         <span className="text-body-sm">解析中...</span>
                       </div>
                     )}
 
-                    {(entry.status === "reviewing" ||
-                      entry.status === "confirming") &&
-                      entry.extraction &&
-                      entry.signal && (
-                        <SignalCard
-                          extraction={entry.extraction}
-                          signal={entry.signal}
-                          resolved={entry.resolved}
-                          onConfirm={() => handleConfirm(entry.id)}
-                          onEdit={() => handleEdit(entry.id)}
-                          onRedirectToReturn={() => router.push("/list")}
-                          confirming={entry.status === "confirming"}
-                        />
-                      )}
+                    {/* レビュー: 個別アイテム確認 */}
+                    {stroke.phase === "reviewing" && stroke.extraction && (
+                      <div className="flex flex-col gap-sm">
+                        {/* ヘッダー */}
+                        <div className="flex items-center gap-sm text-body-sm">
+                          {stroke.extraction.site && (
+                            <span className="text-ink font-bold">
+                              {stroke.extraction.site}
+                            </span>
+                          )}
+                          <span className="text-text-secondary">
+                            — {stroke.items.length}件
+                          </span>
+                        </div>
 
-                    {entry.status === "confirmed" && (
-                      <div className="bg-success/10 border border-success/30 rounded-xl px-md py-sm flex items-center gap-sm">
-                        <span>✅</span>
-                        <span className="text-body-sm text-success font-bold">
-                          {entry.insertedCount}件 登録完了
-                        </span>
+                        {/* 返却の場合: 一覧タブへ誘導 */}
+                        {stroke.extraction.action === "return" ? (
+                          <div className="border border-divider rounded-lg p-md flex flex-col gap-sm">
+                            <div className="text-body-sm text-text-secondary">
+                              返却は一覧タブから操作できます
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => router.push("/list")}
+                              className="bg-success text-surface font-bold rounded-md py-sm min-h-[44px]"
+                            >
+                              一覧タブへ
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            {/* アイテムリスト */}
+                            {stroke.items.map((item, i) => (
+                              <StrokeItemCard
+                                key={`${item.resolved.extractedName}-${i}`}
+                                item={item}
+                                onConfirm={() => handleConfirmItem(stroke.id, i)}
+                                onSkip={() => handleSkipItem(stroke.id, i)}
+                                onUndoSkip={() => handleUndoSkip(stroke.id, i)}
+                              />
+                            ))}
+
+                            {/* 全件確定ボタン */}
+                            {stroke.items.some(
+                              (i) =>
+                                i.status === "pending" &&
+                                i.resolved.status === "matched",
+                            ) && (
+                              <button
+                                type="button"
+                                onClick={() => handleConfirmAll(stroke.id)}
+                                className="bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] shadow-primary-cta transition-all"
+                              >
+                                全件確定
+                              </button>
+                            )}
+
+                            {/* 確定可能なアイテムがない場合 */}
+                            {stroke.items.length > 0 &&
+                              stroke.items.every(
+                                (i) =>
+                                  i.status === "pending" &&
+                                  i.resolved.status !== "matched",
+                              ) && (
+                                <div className="text-label-xs text-text-secondary text-center">
+                                  確定可能なアイテムがありません — スキップしてください
+                                </div>
+                              )}
+
+                            {/* アイテムが0件 */}
+                            {stroke.items.length === 0 && (
+                              <div className="text-body-sm text-text-secondary">
+                                工具を特定できませんでした
+                              </div>
+                            )}
+
+                            {/* 曖昧点 */}
+                            {stroke.extraction.ambiguities.length > 0 && (
+                              <div className="bg-surface border border-divider rounded-md p-sm">
+                                <div className="text-label-xs text-warning font-bold mb-xs">
+                                  確認が必要:
+                                </div>
+                                <ul className="text-body-sm text-text-secondary space-y-xs">
+                                  {stroke.extraction.ambiguities.map((a) => (
+                                    <li key={a}>・{a}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {/* 入力し直す */}
+                            <button
+                              type="button"
+                              onClick={() => handleEdit(stroke.id)}
+                              className="text-label-xs text-text-secondary self-start"
+                            >
+                              入力し直す
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
 
-                    {entry.status === "error" && entry.error && (
+                    {/* 登録中 */}
+                    {stroke.phase === "saving" && (
+                      <div className="flex items-center gap-sm py-sm text-primary">
+                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                        <span className="text-body-sm">登録中...</span>
+                      </div>
+                    )}
+
+                    {/* 完了 */}
+                    {stroke.phase === "done" && stroke.result && (
+                      <div className="bg-success/10 border border-success/30 rounded-xl px-md py-sm flex flex-col gap-xs">
+                        <div className="flex items-center gap-sm">
+                          <span>✅</span>
+                          <span className="text-body-sm text-success font-bold">
+                            {stroke.result.insertedCount}件 登録完了
+                            {stroke.result.skippedCount > 0 && (
+                              <span className="text-text-secondary font-normal">
+                                {" "}/ {stroke.result.skippedCount}件 スキップ
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        {stroke.result.errors.length > 0 && (
+                          <div className="text-label-xs text-error whitespace-pre-wrap">
+                            {stroke.result.errors.join("\n")}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* エラー */}
+                    {stroke.phase === "error" && stroke.error && (
                       <div className="bg-error/10 border border-error/30 rounded-xl px-md py-sm flex flex-col gap-xs">
                         <div className="text-body-sm text-error whitespace-pre-wrap">
-                          {entry.error}
+                          {stroke.error}
                         </div>
                         <div className="flex gap-sm">
                           <button
                             type="button"
-                            onClick={() => handleRetry(entry.id)}
+                            onClick={() => handleRetry(stroke.id)}
                             className="text-label-xs text-primary font-bold"
                           >
                             再試行
                           </button>
                           <button
                             type="button"
-                            onClick={() => handleEdit(entry.id)}
+                            onClick={() => handleEdit(stroke.id)}
                             className="text-label-xs text-text-secondary"
                           >
                             修正
