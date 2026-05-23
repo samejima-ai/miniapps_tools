@@ -367,3 +367,128 @@ export async function confirmCheckoutAction(
 
   return { insertedCount, errors };
 }
+
+/**
+ * ストローク内対話修正 — LLM に修正指示を解釈させ、抽出結果を更新する。
+ *
+ * 元の入力・現在の抽出結果・修正指示を LLM に渡し、
+ * 更新された抽出結果を受け取って再度マスタ照合する。
+ *
+ * D-5: 元の入力にない工具を創作しない。
+ */
+
+const CLARIFICATION_PROMPT = `あなたは工具管理システムの修正指示解釈器です。
+元の入力と現在の抽出結果を踏まえ、ユーザーの修正指示に従って抽出結果を更新してください。
+
+### 必ず守るルール
+- JSON のみ出力。前置き・解説・markdown は禁止
+- 修正対象のアイテムのみ変更し、それ以外は元のまま維持する
+- 元の入力にない工具を新たに創作しない
+- 「やめる」「キャンセル」= items を空配列にする
+- 「◯◯はスキップ」= items から該当工具を除外する
+- 番号変更（「3番は1番に変更」）= 該当アイテムの unitNumbers を修正
+- 現場変更（「現場は星ヶ丘」）= site を修正
+- アイテム追加（「バッテリーは4番も追加」）= 既存工具の番号追加のみ許可
+
+### 出力JSON形式
+{
+  "site": "現場名 or null",
+  "action": "checkout" | "return",
+  "items": [
+    {
+      "name": "工具名",
+      "trackingType": "individual" | "quantity",
+      "unitNumbers": [番号],
+      "quantity": null,
+      "confidence": 0.0-1.0
+    }
+  ],
+  "holderNote": "保持者メモ or null",
+  "ambiguities": ["曖昧な点"],
+  "summary": "変更内容の1行要約（日本語）"
+}`;
+
+export async function clarifyAction(
+  originalText: string,
+  currentExtraction: CaaFExtractionResult,
+  clarificationText: string,
+): Promise<{
+  extraction: CaaFExtractionResult;
+  signal: Signal;
+  resolved: ResolvedItem[];
+  summary: string;
+}> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "ここにキーを貼る") {
+    throw new Error("修正機能には Gemini API キーが必要です");
+  }
+
+  const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
+      contents: [
+        {
+          parts: [
+            { text: CLARIFICATION_PROMPT },
+            { text: `\n\n### 元の入力\n${originalText}` },
+            {
+              text: `\n\n### 現在の抽出結果\n${JSON.stringify(currentExtraction)}`,
+            },
+            { text: `\n\n### ユーザーの修正指示\n${clarificationText}` },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("Gemini clarification error:", res.status, err);
+    throw new Error(`LLM API エラー (${res.status})`);
+  }
+
+  const data = await res.json();
+  const text: string | undefined =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!text) {
+    throw new Error("LLM から有効な応答がありませんでした");
+  }
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    console.error("Gemini clarification JSON parse error:", text);
+    throw new Error("LLM の応答を JSON として解析できませんでした");
+  }
+
+  // summary を抽出してから正規化
+  const summary =
+    typeof parsed.summary === "string" ? parsed.summary : "修正を反映しました";
+
+  const normalized = normalizeExtraction(parsed);
+  const validationResult = CaaFExtractionResultSchema.safeParse(normalized);
+
+  if (!validationResult.success) {
+    console.error(
+      "Zod validation error (clarify):",
+      validationResult.error.issues,
+    );
+    throw new Error("LLM の応答が期待されるスキーマと一致しませんでした");
+  }
+
+  const extraction = validationResult.data;
+  const resolved = await resolveAgainstMaster(extraction);
+  const signal = determineSignalWithResolution(extraction, resolved);
+
+  return { extraction, signal, resolved, summary };
+}

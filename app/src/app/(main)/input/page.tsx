@@ -14,7 +14,12 @@
 import { StrokeItemCard } from "@/components/stroke-item-card";
 import type { StrokeItem } from "@/components/stroke-item-card";
 import { useUser } from "@/lib/user-context";
-import { confirmCheckoutAction, extractAction } from "./actions";
+import {
+  confirmCheckoutAction,
+  clarifyAction,
+  extractAction,
+  type ResolvedItem,
+} from "./actions";
 import type { CaaFExtractionResult, Signal } from "@/types";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -27,6 +32,11 @@ type StrokeResult = {
   errors: string[];
 };
 
+type Clarification = {
+  userText: string;
+  systemMessage: string;
+};
+
 type Stroke = {
   id: string;
   userText: string;
@@ -36,7 +46,41 @@ type Stroke = {
   phase: StrokePhase;
   result: StrokeResult | null;
   error: string | null;
+  clarifications: Clarification[];
+  isClarifying: boolean;
 };
+
+/** マスタ照合済みアイテムのキーを生成（状態マージ用） */
+function makeItemKey(item: ResolvedItem): string {
+  if (item.unitResolutions.length > 0) {
+    const units = item.unitResolutions
+      .map((u) => u.unitNumber)
+      .sort((a, b) => a - b)
+      .join(",");
+    return `${item.matchedItemId ?? item.extractedName}:${units}`;
+  }
+  return `${item.matchedItemId ?? item.extractedName}:qty`;
+}
+
+/** 修正後の再解決で既存の確定/スキップ状態を保持する */
+function mergeItemStatuses(
+  oldItems: StrokeItem[],
+  newResolved: ResolvedItem[],
+): StrokeItem[] {
+  const statusMap = new Map<string, "confirmed" | "skipped">();
+  for (const item of oldItems) {
+    if (item.status !== "confirmed" && item.status !== "skipped") continue;
+    statusMap.set(makeItemKey(item.resolved), item.status);
+  }
+
+  return newResolved.map((r) => {
+    const oldStatus = statusMap.get(makeItemKey(r));
+    if (oldStatus && r.status === "matched") {
+      return { resolved: r, status: oldStatus };
+    }
+    return { resolved: r, status: "pending" as const };
+  });
+}
 
 export default function InputPage() {
   const { currentUser } = useUser();
@@ -119,6 +163,7 @@ export default function InputPage() {
   useEffect(() => {
     for (const stroke of strokes) {
       if (stroke.phase !== "reviewing") continue;
+      if (stroke.isClarifying) continue;
       const hasPending = stroke.items.some((i) => i.status === "pending");
       if (!hasPending && stroke.items.length > 0) {
         saveConfirmedItems(stroke.id);
@@ -127,47 +172,147 @@ export default function InputPage() {
     }
   }, [strokes, saveConfirmedItems]);
 
-  // ── 送信: LLM 抽出 ──
+  // ── 送信: 新規ストロークまたはストローク内修正指示 ──
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
     if (!text) return;
 
-    const id = crypto.randomUUID();
-    setStrokes((prev) => [
-      ...prev,
-      {
-        id,
-        userText: text,
-        extraction: null,
-        signal: null,
-        items: [],
-        phase: "extracting" as const,
-        result: null,
-        error: null,
-      },
-    ]);
     setInputText("");
     if (inputRef.current) inputRef.current.style.height = "auto";
 
-    try {
-      const result = await extractAction(text);
-      const items: StrokeItem[] = result.resolved.map((r) => ({
-        resolved: r,
-        status: "pending" as const,
-      }));
+    // アクティブな reviewing ストロークがあれば修正指示として処理
+    const reviewingStroke = strokesRef.current.find(
+      (s) => s.phase === "reviewing" && !s.isClarifying,
+    );
 
+    if (reviewingStroke?.extraction) {
+      // ── ストローク内対話修正 ──
+      const strokeId = reviewingStroke.id;
+      const capturedItems = reviewingStroke.items;
+
+      // 修正メッセージを追加 + clarifying 状態に
       setStrokes((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, extraction: result.extraction, signal: result.signal, items, phase: "reviewing" as const }
-            : s,
-        ),
+        prev.map((s) => {
+          if (s.id !== strokeId) return s;
+          return {
+            ...s,
+            isClarifying: true,
+            clarifications: [
+              ...s.clarifications,
+              { userText: text, systemMessage: "" },
+            ],
+          };
+        }),
       );
-    } catch (err) {
-      updateStroke(id, {
-        error: err instanceof Error ? err.message : "抽出に失敗しました",
-        phase: "error",
-      });
+
+      try {
+        const result = await clarifyAction(
+          reviewingStroke.userText,
+          reviewingStroke.extraction,
+          text,
+        );
+
+        // キャンセル（空アイテム）
+        if (result.resolved.length === 0) {
+          setStrokes((prev) =>
+            prev.map((s) => {
+              if (s.id !== strokeId) return s;
+              const clarifications = [...s.clarifications];
+              const last = clarifications[clarifications.length - 1];
+              if (last) last.systemMessage = result.summary;
+              return {
+                ...s,
+                extraction: result.extraction,
+                signal: result.signal,
+                items: [],
+                isClarifying: false,
+                clarifications,
+                phase: "done" as const,
+                result: { insertedCount: 0, skippedCount: 0, errors: [] },
+              };
+            }),
+          );
+          return;
+        }
+
+        // 既存アイテムの確定/スキップ状態をマージ
+        const newItems = mergeItemStatuses(capturedItems, result.resolved);
+
+        setStrokes((prev) =>
+          prev.map((s) => {
+            if (s.id !== strokeId) return s;
+            const clarifications = [...s.clarifications];
+            const last = clarifications[clarifications.length - 1];
+            if (last) last.systemMessage = result.summary;
+            return {
+              ...s,
+              extraction: result.extraction,
+              signal: result.signal,
+              items: newItems,
+              isClarifying: false,
+              clarifications,
+            };
+          }),
+        );
+      } catch (err) {
+        setStrokes((prev) =>
+          prev.map((s) => {
+            if (s.id !== strokeId) return s;
+            const clarifications = [...s.clarifications];
+            const last = clarifications[clarifications.length - 1];
+            if (last) {
+              last.systemMessage =
+                err instanceof Error ? err.message : "修正に失敗しました";
+            }
+            return { ...s, isClarifying: false, clarifications };
+          }),
+        );
+      }
+    } else {
+      // ── 新規ストローク ──
+      const id = crypto.randomUUID();
+      setStrokes((prev) => [
+        ...prev,
+        {
+          id,
+          userText: text,
+          extraction: null,
+          signal: null,
+          items: [],
+          phase: "extracting" as const,
+          result: null,
+          error: null,
+          clarifications: [],
+          isClarifying: false,
+        },
+      ]);
+
+      try {
+        const result = await extractAction(text);
+        const items: StrokeItem[] = result.resolved.map((r) => ({
+          resolved: r,
+          status: "pending" as const,
+        }));
+
+        setStrokes((prev) =>
+          prev.map((s) =>
+            s.id === id
+              ? {
+                  ...s,
+                  extraction: result.extraction,
+                  signal: result.signal,
+                  items,
+                  phase: "reviewing" as const,
+                }
+              : s,
+          ),
+        );
+      } catch (err) {
+        updateStroke(id, {
+          error: err instanceof Error ? err.message : "抽出に失敗しました",
+          phase: "error",
+        });
+      }
     }
   }, [inputText, updateStroke]);
 
@@ -243,7 +388,13 @@ export default function InputPage() {
       const stroke = strokesRef.current.find((s) => s.id === strokeId);
       if (!stroke) return;
 
-      updateStroke(strokeId, { phase: "extracting", error: null, items: [] });
+      updateStroke(strokeId, {
+        phase: "extracting",
+        error: null,
+        items: [],
+        clarifications: [],
+        isClarifying: false,
+      });
 
       try {
         const result = await extractAction(stroke.userText);
@@ -321,6 +472,28 @@ export default function InputPage() {
                   </div>
                 </div>
 
+                {/* 対話修正の履歴 */}
+                {stroke.clarifications.map((c, ci) => (
+                  <div key={`clarify-${ci}`} className="flex flex-col gap-sm">
+                    {/* 修正指示（右寄せ） */}
+                    <div className="flex justify-end">
+                      <div className="bg-primary text-surface rounded-2xl rounded-br-sm px-md py-sm max-w-[80%]">
+                        <div className="text-body-sm whitespace-pre-wrap">
+                          {c.userText}
+                        </div>
+                      </div>
+                    </div>
+                    {/* 修正結果（左寄せ） */}
+                    {c.systemMessage && (
+                      <div className="flex justify-start">
+                        <div className="text-body-sm text-text-secondary py-xs px-sm">
+                          {c.systemMessage}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
                 {/* システム応答（左寄せ） */}
                 <div className="flex justify-start">
                   <div className="max-w-[95%] w-full">
@@ -332,8 +505,16 @@ export default function InputPage() {
                       </div>
                     )}
 
+                    {/* 修正反映中 */}
+                    {stroke.isClarifying && (
+                      <div className="flex items-center gap-sm py-sm text-primary">
+                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                        <span className="text-body-sm">修正を反映中...</span>
+                      </div>
+                    )}
+
                     {/* レビュー: 個別アイテム確認 */}
-                    {stroke.phase === "reviewing" && stroke.extraction && (
+                    {stroke.phase === "reviewing" && stroke.extraction && !stroke.isClarifying && (
                       <div className="flex flex-col gap-sm">
                         {/* ヘッダー */}
                         <div className="flex items-center gap-sm text-body-sm">
@@ -445,17 +626,34 @@ export default function InputPage() {
 
                     {/* 完了 */}
                     {stroke.phase === "done" && stroke.result && (
-                      <div className="bg-success/10 border border-success/30 rounded-xl px-md py-sm flex flex-col gap-xs">
+                      <div
+                        className={`rounded-xl px-md py-sm flex flex-col gap-xs ${
+                          stroke.result.insertedCount === 0 &&
+                          stroke.result.skippedCount === 0
+                            ? "bg-background-subtle border border-divider"
+                            : "bg-success/10 border border-success/30"
+                        }`}
+                      >
                         <div className="flex items-center gap-sm">
-                          <span>✅</span>
-                          <span className="text-body-sm text-success font-bold">
-                            {stroke.result.insertedCount}件 登録完了
-                            {stroke.result.skippedCount > 0 && (
-                              <span className="text-text-secondary font-normal">
-                                {" "}/ {stroke.result.skippedCount}件 スキップ
+                          {stroke.result.insertedCount === 0 &&
+                          stroke.result.skippedCount === 0 ? (
+                            <span className="text-body-sm text-text-secondary">
+                              キャンセルしました
+                            </span>
+                          ) : (
+                            <>
+                              <span>✅</span>
+                              <span className="text-body-sm text-success font-bold">
+                                {stroke.result.insertedCount}件 登録完了
+                                {stroke.result.skippedCount > 0 && (
+                                  <span className="text-text-secondary font-normal">
+                                    {" "}/ {stroke.result.skippedCount}件
+                                    スキップ
+                                  </span>
+                                )}
                               </span>
-                            )}
-                          </span>
+                            </>
+                          )}
                         </div>
                         {stroke.result.errors.length > 0 && (
                           <div className="text-label-xs text-error whitespace-pre-wrap">
@@ -513,7 +711,13 @@ export default function InputPage() {
                 composingRef.current = false;
               }, 0);
             }}
-            placeholder="工具名・番号・現場を入力..."
+            placeholder={
+              strokes.some(
+                (s) => s.phase === "reviewing" && !s.isClarifying,
+              )
+                ? "修正内容を入力..."
+                : "工具名・番号・現場を入力..."
+            }
             className="flex-1 bg-background-subtle border border-divider rounded-2xl px-md py-sm text-body-sm placeholder:text-text-secondary focus:outline-none focus:border-primary resize-none leading-normal"
             rows={1}
             style={{ minHeight: 40, maxHeight: 120 }}
@@ -521,7 +725,10 @@ export default function InputPage() {
           <button
             type="button"
             onClick={handleSend}
-            disabled={!inputText.trim()}
+            disabled={
+              !inputText.trim() ||
+              strokes.some((s) => s.isClarifying)
+            }
             className="bg-primary text-surface rounded-full w-10 h-10 flex items-center justify-center disabled:opacity-40 transition-all shrink-0"
             aria-label="送信"
           >
