@@ -150,15 +150,36 @@ async function resolveAgainstMaster(
   const resolved: ResolvedItem[] = [];
 
   for (const item of extraction.items) {
-    // 1. 工具名 → items ILIKE 部分一致
-    const { data: matchedItems } = await supabase
-      .from("items")
-      .select("id, name, tracking_type")
-      .ilike("name", `%${item.name}%`)
-      .eq("is_active", true)
-      .limit(5);
+    // 0. エイリアス検索（学習済みマッピング → ILIKE より優先）
+    let matched: { id: string; name: string; tracking_type: string } | undefined;
 
-    const matched = matchedItems?.[0];
+    const { data: aliasHit } = await supabase
+      .from("item_name_aliases")
+      .select("item_id, canonical_name")
+      .eq("alias", item.name.toLowerCase())
+      .limit(1);
+
+    if (aliasHit?.[0]) {
+      const { data: aliasItem } = await supabase
+        .from("items")
+        .select("id, name, tracking_type")
+        .eq("id", aliasHit[0].item_id)
+        .eq("is_active", true)
+        .single();
+      if (aliasItem) matched = aliasItem as typeof matched;
+    }
+
+    // 1. エイリアス未ヒット → items ILIKE 部分一致
+    if (!matched) {
+      const { data: matchedItems } = await supabase
+        .from("items")
+        .select("id, name, tracking_type")
+        .ilike("name", `%${item.name}%`)
+        .eq("is_active", true)
+        .limit(5);
+
+      matched = matchedItems?.[0] as typeof matched;
+    }
 
     if (!matched) {
       resolved.push({
@@ -264,6 +285,19 @@ export async function extractAction(
 
   const url = `${GEMINI_ENDPOINT}?key=${apiKey}`;
 
+  // Layer B: 上位エイリアスを LLM プロンプトに注入（正規化精度向上）
+  const supabase = await createServerSupabaseClient();
+  const { data: topAliases } = await supabase
+    .from("item_name_aliases")
+    .select("alias, canonical_name")
+    .order("use_count", { ascending: false })
+    .limit(30);
+
+  const aliasContext =
+    topAliases && topAliases.length > 0
+      ? `\n\n### 過去の入力パターン（この名前で入力されたら対応する正式名に読み替えてください）\n${topAliases.map((a) => `${a.alias} → ${a.canonical_name}`).join("\n")}`
+      : "";
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -272,7 +306,7 @@ export async function extractAction(
       contents: [
         {
           parts: [
-            { text: EXTRACTION_PROMPT },
+            { text: EXTRACTION_PROMPT + aliasContext },
             { text: `\n\n### ユーザー入力\n${naturalText}` },
           ],
         },
@@ -406,6 +440,55 @@ export async function confirmCheckoutAction(
       } else {
         insertedCount++;
       }
+    }
+  }
+
+  // ── エイリアス学習: extractedName ≠ matchedName を自動保存 (D-4: 確定後のみ) ──
+  for (const item of resolved) {
+    if (
+      !item.matchedItemId ||
+      !item.matchedName ||
+      item.extractedName === item.matchedName
+    ) {
+      continue;
+    }
+
+    const alias = item.extractedName.toLowerCase();
+    const { data: existing } = await supabase
+      .from("item_name_aliases")
+      .select("id, item_id, use_count")
+      .eq("alias", alias)
+      .maybeSingle();
+
+    if (existing) {
+      if (existing.item_id === item.matchedItemId) {
+        // 同一マッピング → use_count++
+        await supabase
+          .from("item_name_aliases")
+          .update({
+            use_count: (existing.use_count as number) + 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+      } else {
+        // 別の工具に確定 → 最新の人間判断で上書き
+        await supabase
+          .from("item_name_aliases")
+          .update({
+            item_id: item.matchedItemId,
+            canonical_name: item.matchedName,
+            use_count: 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+      }
+    } else {
+      // 新規エイリアス
+      await supabase.from("item_name_aliases").insert({
+        alias,
+        item_id: item.matchedItemId,
+        canonical_name: item.matchedName,
+      });
     }
   }
 
