@@ -71,6 +71,12 @@ export default function InputPage() {
         setError(result.errors.join("\n"));
       }
 
+      if (result.insertedCount === 0) {
+        // 全件失敗 → エラー表示に留まる（確定扱いにしない）
+        setCardState("error");
+        return;
+      }
+
       setCardState("confirmed");
 
       // 確定後、1秒後に一覧へ遷移
