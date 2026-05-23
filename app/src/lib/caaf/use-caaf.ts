@@ -20,20 +20,21 @@ function mergeItemStatuses<TResolved>(
   getExtractedName: (resolved: TResolved) => string,
   isConfirmable: (resolved: TResolved) => boolean,
 ): StrokeItem<TResolved>[] {
-  const statusMap = new Map<string, "confirmed" | "skipped">();
+  // key ベースで引き継ぐ (順序変更や個数増減でも復元可能)
+  const statusByKey = new Map<string, "confirmed" | "skipped">();
+  const originalNameByKey = new Map<string, string>();
   for (const item of oldItems) {
-    if (item.status !== "confirmed" && item.status !== "skipped") continue;
-    statusMap.set(makeItemKey(item.resolved), item.status);
+    const k = makeItemKey(item.resolved);
+    if (item.status === "confirmed" || item.status === "skipped") {
+      statusByKey.set(k, item.status);
+    }
+    originalNameByKey.set(k, item.originalExtractedName ?? getExtractedName(item.resolved));
   }
 
-  const sameCount = oldItems.length === newResolved.length;
-
-  return newResolved.map((r, idx) => {
-    const oldStatus = statusMap.get(makeItemKey(r));
-    const oldItem = sameCount ? oldItems[idx] : undefined;
-    const originalExtractedName = oldItem
-      ? (oldItem.originalExtractedName ?? getExtractedName(oldItem.resolved))
-      : getExtractedName(r);
+  return newResolved.map((r) => {
+    const k = makeItemKey(r);
+    const oldStatus = statusByKey.get(k);
+    const originalExtractedName = originalNameByKey.get(k) ?? getExtractedName(r);
 
     // confirmed は再抽出後に確定可能でなくなったら pending に戻す。
     // skipped は意思表示なのでそのまま引き継ぐ。
@@ -143,6 +144,12 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   const handleSend = useCallback(async () => {
     const text = inputText.trim();
     if (!text) return;
+
+    // f2-chat-ui-v2: 並行ストローク禁止。extracting / saving / clarifying 中は無視。
+    const hasBusy = strokesRef.current.some(
+      (s) => s.isClarifying || s.phase === "extracting" || s.phase === "saving",
+    );
+    if (hasBusy) return;
 
     setInputText("");
     if (inputRef.current) inputRef.current.style.height = "auto";
@@ -431,7 +438,11 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   }, []);
 
   const isReviewing = strokes.some((s) => s.phase === "reviewing" && !s.isClarifying);
-  const isBusy = strokes.some((s) => s.isClarifying);
+  // f2-chat-ui-v2 §「複数ストロークを並行させない」: extracting / saving / clarifying 中は
+  // 送信を無効化し、新規ストロークが並行追加されないようにする。
+  const isBusy = strokes.some(
+    (s) => s.isClarifying || s.phase === "extracting" || s.phase === "saving",
+  );
 
   return {
     strokes,

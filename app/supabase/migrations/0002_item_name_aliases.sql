@@ -26,9 +26,9 @@ comment on table miniapps_tools.item_name_aliases is
   'CaaF フィードバックループ。確定時に extractedName≠matchedName を自動学習。resolveAgainstMaster の ILIKE 前段で使用。';
 
 -- ── GRANT ──────────────────────────────────────────────────────
--- anon: SELECT（照合用）+ INSERT/UPDATE（学習書き込み用）
--- default privileges は SELECT のみなので INSERT/UPDATE は明示付与
-grant select, insert, update on miniapps_tools.item_name_aliases to anon;
+-- 0001 と方針合わせ: anon は SELECT のみ（照合用）
+-- 書き込み (学習) は authenticated に限定。プロンプト注入で alias 経由のデータ汚染を防ぐ。
+grant select on miniapps_tools.item_name_aliases to anon;
 grant select, insert, update on miniapps_tools.item_name_aliases to authenticated;
 
 -- ── RLS ───────────────────────────────────────────────────────
@@ -36,7 +36,8 @@ alter table miniapps_tools.item_name_aliases enable row level security;
 
 create policy p_aliases_read   on miniapps_tools.item_name_aliases
   for select using (true);
+-- 書き込み policy は authenticated に限定（anon はそもそも GRANT なし）
 create policy p_aliases_insert on miniapps_tools.item_name_aliases
-  for insert with check (true);
+  for insert to authenticated with check (true);
 create policy p_aliases_update on miniapps_tools.item_name_aliases
-  for update using (true) with check (true);
+  for update to authenticated using (true) with check (true);

@@ -27,7 +27,9 @@ comment on table miniapps_tools.project_name_aliases is
   'CaaF プロジェクト名フィードバックループ。確定/ピッカー選択時に extractedSite≠canonicalName を自動学習。';
 
 -- ── GRANT ──────────────────────────────────────────────────────
-grant select, insert, update on miniapps_tools.project_name_aliases to anon;
+-- 0001 と方針合わせ: anon は SELECT のみ（照合用）
+-- 書き込みは authenticated 限定 (site → project_id マッピングを匿名で書き換え不能にする)
+grant select on miniapps_tools.project_name_aliases to anon;
 grant select, insert, update on miniapps_tools.project_name_aliases to authenticated;
 
 -- ── RLS ───────────────────────────────────────────────────────
@@ -36,6 +38,6 @@ alter table miniapps_tools.project_name_aliases enable row level security;
 create policy p_project_aliases_read   on miniapps_tools.project_name_aliases
   for select using (true);
 create policy p_project_aliases_insert on miniapps_tools.project_name_aliases
-  for insert with check (true);
+  for insert to authenticated with check (true);
 create policy p_project_aliases_update on miniapps_tools.project_name_aliases
-  for update using (true) with check (true);
+  for update to authenticated using (true) with check (true);

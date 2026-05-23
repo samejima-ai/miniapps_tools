@@ -43,7 +43,15 @@ async function resolveProjectFromSite(siteName: string | null): Promise<Resolved
       candidates: [],
     };
   }
-  const supabase = await createPublicServerClient();
+  // public スキーマ未設定 (env なし) で throw すると抽出全体が落ちるので、
+  // 案件解決は best-effort: 失敗時は not_found で続行する。
+  let supabase: Awaited<ReturnType<typeof createPublicServerClient>>;
+  try {
+    supabase = await createPublicServerClient();
+  } catch (e) {
+    console.warn("resolveProjectFromSite: public schema client unavailable:", e);
+    return { projectId: null, projectName: null, status: "not_found", candidates: [] };
+  }
   const supabaseTools = await createServerSupabaseClient();
   const trimmed = siteName.trim();
 
@@ -442,10 +450,12 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
     // 0. エイリアス検索（学習済みマッピング → ILIKE より優先）
     let matched: { id: string; name: string; tracking_type: string } | undefined;
 
+    // alias は learnAlias と同じく trim + lowercase で正規化（前後空白で hit を漏らさない）
+    const aliasKey = item.name.trim().toLowerCase();
     const { data: aliasHit } = await supabase
       .from("item_name_aliases")
       .select("id, item_id, canonical_name, use_count")
-      .eq("alias", item.name.toLowerCase())
+      .eq("alias", aliasKey)
       .limit(1);
 
     if (aliasHit?.[0]) {
@@ -524,9 +534,10 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
     }));
 
     const hasUnitMissing = unitResolutions.some((r) => !r.exists);
+    // 番号必須かはマスタの tracking_type だけで判定する。LLM 抽出の trackingType が
+    // 誤判定でも、quantity マスタなら番号なしで matched 扱いにする。
     const isIndividualNoUnit =
-      (matched.tracking_type === "individual" || item.trackingType === "individual") &&
-      item.unitNumbers.length === 0;
+      matched.tracking_type === "individual" && item.unitNumbers.length === 0;
 
     resolved.push({
       extractedName: item.name,
@@ -584,18 +595,17 @@ export async function extractAction(naturalText: string): Promise<{
   resolvedProject: ResolvedProject;
 }> {
   if (!isGeminiConfigured()) {
-    // フォールバック: デモ解析（マスタ照合なし）
+    // フォールバック: デモ解析（LLM なし）でも UI で確認できるよう、
+    // マスタ照合と案件解決まで通す。
     const { extractFromNaturalText } = await import("@/lib/llm/router");
     const demo = await extractFromNaturalText(naturalText);
+    const demoResolved = await resolveAgainstMaster(demo.extraction);
+    const demoProject = await resolveProjectFromSite(demo.extraction.site);
     return {
-      ...demo,
-      resolved: [],
-      resolvedProject: {
-        projectId: null,
-        projectName: null,
-        status: "no_site",
-        candidates: [],
-      },
+      extraction: demo.extraction,
+      signal: determineSignalWithResolution(demo.extraction, demoResolved),
+      resolved: demoResolved,
+      resolvedProject: demoProject,
     };
   }
 
@@ -607,9 +617,18 @@ export async function extractAction(naturalText: string): Promise<{
     .order("use_count", { ascending: false })
     .limit(30);
 
+  // プロンプト注入防止: alias / canonical_name から改行・制御文字を除去、長さ制限
+  // (RLS で authenticated 限定にしているが、防御層は重ねる)
+  const sanitize = (s: unknown): string =>
+    String(s ?? "")
+      .replace(/[\r\n\t]+/g, " ")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 制御文字を除去するためにレンジ指定が必要
+      .replace(/[ -]/g, "")
+      .slice(0, 100);
+
   const aliasContext =
     topAliases && topAliases.length > 0
-      ? `\n\n### 過去の入力パターン（この名前で入力されたら対応する正式名に読み替えてください）\n${topAliases.map((a) => `${a.alias} → ${a.canonical_name}`).join("\n")}`
+      ? `\n\n### 過去の入力パターン（この名前で入力されたら対応する正式名に読み替えてください）\n${topAliases.map((a) => `${sanitize(a.alias)} → ${sanitize(a.canonical_name)}`).join("\n")}`
       : "";
 
   const parsed = await callGeminiJSON([
@@ -705,7 +724,7 @@ export async function confirmCheckoutAction(
         movement_type: extraction.action,
         from_location_id: null,
         to_location_id: null,
-        project_id: null,
+        project_id: projectId,
         holder_id: holderId ?? movedBy,
         moved_by: movedBy,
         source: "caaf",
