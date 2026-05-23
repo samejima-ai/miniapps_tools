@@ -61,43 +61,9 @@ export default function InputPage() {
 
     setConfirming(true);
     try {
-      if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-        const { createClient } = await import("@/lib/supabase/client");
-        const { insertMovement } = await import("@/lib/supabase/movements");
-        const supabase = createClient();
-
-        // 各 item × unit_number で1行ずつ INSERT (SPEC F2)
-        for (const item of extraction.items) {
-          if (item.trackingType === "individual" && item.unitNumbers.length > 0) {
-            for (const num of item.unitNumbers) {
-              // TODO: unit_number → unit_id のマスタ参照解決
-              await insertMovement(supabase, {
-                itemId: "placeholder-item-id", // マスタ参照解決後に差替え
-                unitId: `placeholder-unit-${num}`,
-                movementType: "checkout",
-                projectId: null,
-                holderId: currentUser.id,
-                movedBy: currentUser.id,
-                source: "caaf",
-                confidence: item.confidence,
-                notes: inputText,
-              });
-            }
-          } else if (item.trackingType === "quantity" && item.quantity != null) {
-            await insertMovement(supabase, {
-              itemId: "placeholder-item-id",
-              quantity: item.quantity,
-              movementType: "checkout",
-              projectId: null,
-              holderId: currentUser.id,
-              movedBy: currentUser.id,
-              source: "caaf",
-              confidence: item.confidence,
-              notes: inputText,
-            });
-          }
-        }
-      }
+      // TODO: マスタ参照解決（item name → item_id, unit_number → unit_id）が
+      // 実装されるまで DB 書き込みは行わない。デモモードでは UI 確認のみ。
+      // マスタ解決の実装後にこのガードを外し、insertMovement を有効化する。
 
       setCardState("confirmed");
 
@@ -115,7 +81,7 @@ export default function InputPage() {
     } finally {
       setConfirming(false);
     }
-  }, [extraction, currentUser, inputText, router]);
+  }, [extraction, currentUser, router]);
 
   // 修正: 入力画面に戻る
   const handleEdit = useCallback(() => {

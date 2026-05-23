@@ -32,7 +32,11 @@ export async function listCurrentlyOut(
     q = q.eq("current_project_id", filter.projectId);
   }
   if (filter?.query) {
-    q = q.or(`item_name.ilike.%${filter.query}%,unit_number::text.ilike.%${filter.query}%`);
+    // PostgREST 演算子インジェクション防止: 特殊文字をエスケープ
+    const sanitized = filter.query.replace(/[%_,().]/g, "");
+    if (sanitized) {
+      q = q.or(`item_name.ilike.%${sanitized}%,unit_number::text.ilike.%${sanitized}%`);
+    }
   }
 
   q = q.order("last_moved_at", { ascending: false });

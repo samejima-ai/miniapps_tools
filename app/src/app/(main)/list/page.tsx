@@ -92,7 +92,7 @@ export default function ListPage() {
         const data = await listCurrentlyOut(supabase, {
           holderId: scope === "mine" ? currentUser?.id : undefined,
         });
-        setItems(data.length > 0 ? data : DEMO_DATA);
+        setItems(data);
       } catch {
         setItems(DEMO_DATA);
       } finally {

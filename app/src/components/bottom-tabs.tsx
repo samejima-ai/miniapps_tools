@@ -3,7 +3,7 @@
 /**
  * BottomTabs — 下部タブナビゲーション
  *
- * - 入力（CaaF）タブ / 一覧タブ の2つ
+ * - 一覧タブ / 入力（CaaF）タブ / マスタタブ の3つ
  * - DESIGN.md: primary for active, text-secondary for inactive
  * - タッチターゲット 44px 以上 (DESIGN.md Do)
  */

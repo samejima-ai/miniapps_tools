@@ -20,6 +20,7 @@ export async function createServerSupabaseClient() {
   }
 
   return createServerClient(supabaseUrl, supabaseAnonKey, {
+    db: { schema: "miniapps_tools" },
     cookies: {
       getAll() {
         return cookieStore.getAll();

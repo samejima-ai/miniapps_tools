@@ -17,5 +17,7 @@ export function createClient() {
     );
   }
 
-  return createBrowserClient(supabaseUrl, supabaseAnonKey);
+  return createBrowserClient(supabaseUrl, supabaseAnonKey, {
+    db: { schema: "miniapps_tools" },
+  });
 }

@@ -12,7 +12,8 @@
 
 import type { CaaFExtractionResult, Signal } from "@/types";
 
-const EXTRACTION_PROMPT = `あなたは工具管理システムの入力解析器です。
+// TODO: LLM 実装時に使用。現在はデモ解析にフォールバック。
+const _EXTRACTION_PROMPT = `あなたは工具管理システムの入力解析器です。
 ユーザーの自然文から工具の持出・返却情報を抽出してください。
 
 ### 必ず守るルール
@@ -73,33 +74,17 @@ export function determineSignal(extraction: CaaFExtractionResult): Signal {
  */
 export async function extractFromNaturalText(
   naturalText: string,
-  opts?: { timeoutMs?: number },
+  _opts?: { timeoutMs?: number },
 ): Promise<{ extraction: CaaFExtractionResult; signal: Signal }> {
-  const timeoutMs = opts?.timeoutMs ?? 5000;
-
-  // デモモード: LLM API キーが未設定の場合はローカル解析
-  if (!process.env.NEXT_PUBLIC_LLM_API_KEY) {
-    const demoResult = parseDemoExtraction(naturalText);
-    return {
-      extraction: demoResult,
-      signal: determineSignal(demoResult),
-    };
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    // TODO: Gemini Flash Lite / Claude API 実装
-    // 現時点ではデモ解析にフォールバック
-    const demoResult = parseDemoExtraction(naturalText);
-    return {
-      extraction: demoResult,
-      signal: determineSignal(demoResult),
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+  // TODO: Gemini Flash Lite / Claude API 実装
+  // LLM 呼び出しは Server Action 経由に移行し、API キーは
+  // NEXT_PUBLIC_ なしの環境変数で管理する（クライアント漏洩防止）。
+  // 現時点ではデモ解析にフォールバック。
+  const demoResult = parseDemoExtraction(naturalText);
+  return {
+    extraction: demoResult,
+    signal: determineSignal(demoResult),
+  };
 }
 
 /**

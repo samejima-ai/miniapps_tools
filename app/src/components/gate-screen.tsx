@@ -43,16 +43,16 @@ export function GateScreen() {
         const { createClient } = await import("@/lib/supabase/client");
         const supabase = createClient();
 
-        // Supabase Auth でユーザー一覧を取得（MVP: profiles テーブルから）
-        // 将来: platform.employees から取得
-        const { data, error } = await supabase.from("employees").select("id, name").order("name");
-
-        if (error || !data || data.length === 0) {
-          // テーブル未作成 or データ無し → デモ社員
-          setEmployees(DEMO_EMPLOYEES);
-        } else {
-          setEmployees(data as Employee[]);
+        // MVP: employees テーブルは miniapps_tools スキーマの DDL に含まれないため
+        // Supabase 接続時も常にデモ社員にフォールバックする。
+        // 将来: platform.employees テーブル追加後に実データ取得に切替え。
+        // 現時点では Supabase が接続可能であることの疎通確認のみ実施。
+        try {
+          await supabase.from("items").select("id").limit(1);
+        } catch {
+          // 接続失敗は無視
         }
+        setEmployees(DEMO_EMPLOYEES);
       } catch {
         setEmployees(DEMO_EMPLOYEES);
       } finally {

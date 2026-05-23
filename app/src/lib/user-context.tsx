@@ -12,7 +12,9 @@
  */
 
 import type { Employee } from "@/types";
-import { type ReactNode, createContext, useCallback, useContext, useState } from "react";
+import { type ReactNode, createContext, useCallback, useContext, useEffect, useState } from "react";
+
+const SESSION_KEY = "miniapps_tools_current_user";
 
 type UserContextValue = {
   /** 現在選択中のユーザー (null = 未選択 = Gate 表示) */
@@ -25,15 +27,47 @@ type UserContextValue = {
 
 const UserContext = createContext<UserContextValue | null>(null);
 
+/** sessionStorage から復元（リロード時にゲートに戻らない） */
+function loadFromSession(): Employee | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { id?: string; name?: string };
+    if (parsed.id && parsed.name) {
+      return { id: parsed.id, name: parsed.name };
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 export function UserProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState<Employee | null>(null);
 
+  // 初回マウント時に sessionStorage から復元
+  useEffect(() => {
+    const saved = loadFromSession();
+    if (saved) setCurrentUser(saved);
+  }, []);
+
   const selectUser = useCallback((employee: Employee) => {
     setCurrentUser(employee);
+    try {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(employee));
+    } catch {
+      // ignore
+    }
   }, []);
 
   const switchUser = useCallback(() => {
     setCurrentUser(null);
+    try {
+      sessionStorage.removeItem(SESSION_KEY);
+    } catch {
+      // ignore
+    }
   }, []);
 
   return (

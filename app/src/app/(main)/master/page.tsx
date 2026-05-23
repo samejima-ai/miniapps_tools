@@ -228,7 +228,7 @@ function ItemsTab() {
           const { listItems } = await import("@/lib/supabase/master");
           const supabase = createClient();
           const data = await listItems(supabase);
-          setItems(data.length > 0 ? data : DEMO_ITEMS);
+          setItems(data);
         } else {
           setItems(DEMO_ITEMS);
         }
@@ -247,7 +247,7 @@ function ItemsTab() {
     try {
       if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         const { createClient } = await import("@/lib/supabase/client");
-        const { insertItem } = await import("@/lib/supabase/master");
+        const { insertItem, listItems } = await import("@/lib/supabase/master");
         const supabase = createClient();
         await insertItem(supabase, {
           name: formName.trim(),
@@ -255,20 +255,24 @@ function ItemsTab() {
           trackingType: formTrackingType,
           itemCode: formItemCode.trim() || null,
         });
+        // 再読込で実データを反映
+        const refreshed = await listItems(supabase);
+        setItems(refreshed);
+      } else {
+        // デモモード: ローカルに追加
+        setItems((prev) => [
+          {
+            id: `demo-new-${Date.now()}`,
+            name: formName.trim(),
+            category: formCategory,
+            trackingType: formTrackingType,
+            itemCode: formItemCode.trim() || null,
+            notes: null,
+            isActive: true,
+          },
+          ...prev,
+        ]);
       }
-      // デモモード: ローカルに追加
-      setItems((prev) => [
-        {
-          id: `demo-new-${Date.now()}`,
-          name: formName.trim(),
-          category: formCategory,
-          trackingType: formTrackingType,
-          itemCode: formItemCode.trim() || null,
-          notes: null,
-          isActive: true,
-        },
-        ...prev,
-      ]);
       setFormName("");
       setFormItemCode("");
       setShowForm(false);
@@ -433,8 +437,8 @@ function UnitsTab() {
             listUnits(supabase),
             listItems(supabase),
           ]);
-          setUnits(unitData.length > 0 ? unitData : DEMO_UNITS);
-          setLocalItems(itemData.length > 0 ? itemData : DEMO_ITEMS);
+          setUnits(unitData);
+          setLocalItems(itemData);
         } else {
           setUnits(DEMO_UNITS);
           setLocalItems(DEMO_ITEMS);
@@ -460,23 +464,26 @@ function UnitsTab() {
     try {
       if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         const { createClient } = await import("@/lib/supabase/client");
-        const { insertUnit } = await import("@/lib/supabase/master");
+        const { insertUnit, listUnits } = await import("@/lib/supabase/master");
         const supabase = createClient();
         await insertUnit(supabase, { itemId: formItemId, unitNumber: num });
+        // 再読込で実データを反映
+        const refreshed = await listUnits(supabase);
+        setUnits(refreshed);
+      } else {
+        const parentItem = items.find((i) => i.id === formItemId);
+        setUnits((prev) => [
+          ...prev,
+          {
+            id: `demo-new-${Date.now()}`,
+            itemId: formItemId,
+            itemName: parentItem?.name ?? "不明",
+            unitNumber: num,
+            isActive: true,
+            notes: null,
+          },
+        ]);
       }
-
-      const parentItem = items.find((i) => i.id === formItemId);
-      setUnits((prev) => [
-        ...prev,
-        {
-          id: `demo-new-${Date.now()}`,
-          itemId: formItemId,
-          itemName: parentItem?.name ?? "不明",
-          unitNumber: num,
-          isActive: true,
-          notes: null,
-        },
-      ]);
       setFormUnitNumber("");
       setShowForm(false);
     } catch (err) {
@@ -604,7 +611,7 @@ function LocationsTab() {
           const { listLocations } = await import("@/lib/supabase/master");
           const supabase = createClient();
           const data = await listLocations(supabase);
-          setLocations(data.length > 0 ? data : DEMO_LOCATIONS);
+          setLocations(data);
         } else {
           setLocations(DEMO_LOCATIONS);
         }
@@ -623,20 +630,24 @@ function LocationsTab() {
     try {
       if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         const { createClient } = await import("@/lib/supabase/client");
-        const { insertLocation } = await import("@/lib/supabase/master");
+        const { insertLocation, listLocations } = await import("@/lib/supabase/master");
         const supabase = createClient();
         await insertLocation(supabase, { name: formName.trim(), kind: formKind });
+        // 再読込で実データを反映
+        const refreshed = await listLocations(supabase);
+        setLocations(refreshed);
+      } else {
+        setLocations((prev) => [
+          {
+            id: `demo-new-${Date.now()}`,
+            name: formName.trim(),
+            kind: formKind,
+            projectId: null,
+            isActive: true,
+          },
+          ...prev,
+        ]);
       }
-      setLocations((prev) => [
-        {
-          id: `demo-new-${Date.now()}`,
-          name: formName.trim(),
-          kind: formKind,
-          projectId: null,
-          isActive: true,
-        },
-        ...prev,
-      ]);
       setFormName("");
       setShowForm(false);
     } catch (err) {
