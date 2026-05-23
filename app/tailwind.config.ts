@@ -36,8 +36,8 @@ const config: Config = {
         "signal-red": "#c0392b",
       },
       fontFamily: {
-        sans: ["'Noto Sans JP'", "system-ui", "sans-serif"],
-        mono: ["'JetBrains Mono'", "monospace"],
+        sans: ["var(--font-noto-sans-jp)", "'Noto Sans JP'", "system-ui", "sans-serif"],
+        mono: ["var(--font-jetbrains-mono)", "'JetBrains Mono'", "monospace"],
       },
       fontSize: {
         // DESIGN.md typography トークン（[size, { lineHeight, fontWeight }]）

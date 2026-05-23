@@ -10,7 +10,7 @@
  */
 
 :root {
-  font-family: "Noto Sans JP", system-ui, sans-serif;
+  font-family: var(--font-noto-sans-jp), "Noto Sans JP", system-ui, sans-serif;
   color-scheme: light;
 }
 
@@ -18,5 +18,3 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-
-/* Noto Sans JP は L1 着手時に next/font または Google Fonts で正式ロード */

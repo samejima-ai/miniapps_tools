@@ -212,35 +212,64 @@ where s.current_status = 'out';
 comment on view miniapps_tools.v_currently_out is '現在持出中の個体一覧。一覧(自分軸)・クイック返却の源。holder_idで自分軸フィルタ。';
 
 -- ============================================================================
--- D. RLS（Row Level Security）
---   MVP方針：社内全員が閲覧・登録可。将来 Platform ロールで精緻化。
---   重要：返却=movementのINSERTで表現。実体の更新削除はさせない（append-only担保）。
+-- D. GRANT + RLS
+--   Platform パターン準拠（kakuman-platform-v3.0 の GRANT 方式を踏襲）
+--   - public スキーマは ALTER DEFAULT PRIVILEGES で自動付与されるが、
+--     miniapps_tools は別スキーマのため明示 GRANT が必要。
+--   MVP方針：anon は原則 SELECT。書き込みは item_movements INSERT のみ許可。
+--   マスタ改ざん防止: items/units/locations の書き込みは authenticated に限定。
+--   重要：返却=movementのINSERTで表現。movements の UPDATE は GRANT しない（append-only担保）。
 -- ============================================================================
+
+-- ── スキーマアクセス ──────────────────────────────────────────
+grant usage on schema miniapps_tools to anon, authenticated;
+
+-- ── テーブルレベル GRANT ─────────────────────────────────────
+-- anon: 原則 SELECT。item_movements のみ INSERT 許可（CaaF 持出/返却経路）。
+--   マスタ(items/units/locations) は READ-ONLY で改ざん防止。
+grant select on all tables in schema miniapps_tools to anon;
+grant insert on miniapps_tools.item_movements to anon;
+
+-- authenticated: SELECT + INSERT + UPDATE（DELETE なし = 論理削除運用）
+--   item_movements は append-only (D-1) のため INSERT のみ。UPDATE 付与しない。
+grant select on all tables in schema miniapps_tools to authenticated;
+grant insert, update on miniapps_tools.items to authenticated;
+grant insert, update on miniapps_tools.individual_units to authenticated;
+grant insert, update on miniapps_tools.locations to authenticated;
+grant insert on miniapps_tools.item_movements to authenticated;
+
+-- ── 今後のテーブル追加時のデフォルト ──────────────────────────
+alter default privileges in schema miniapps_tools
+  grant select on tables to anon;
+alter default privileges in schema miniapps_tools
+  grant select, insert on tables to authenticated;
+
+-- ── RLS ───────────────────────────────────────────────────────
 
 alter table miniapps_tools.items            enable row level security;
 alter table miniapps_tools.individual_units enable row level security;
 alter table miniapps_tools.locations        enable row level security;
 alter table miniapps_tools.item_movements   enable row level security;
 
--- 認証ユーザーは参照可
-create policy p_items_read   on miniapps_tools.items            for select using (auth.role() = 'authenticated');
-create policy p_units_read   on miniapps_tools.individual_units for select using (auth.role() = 'authenticated');
-create policy p_loc_read     on miniapps_tools.locations        for select using (auth.role() = 'authenticated');
-create policy p_mv_read      on miniapps_tools.item_movements   for select using (auth.role() = 'authenticated');
+-- MVP: anon + authenticated ともに全行アクセス可。将来 Platform ロールで精緻化。
+create policy p_items_read   on miniapps_tools.items            for select using (true);
+create policy p_units_read   on miniapps_tools.individual_units for select using (true);
+create policy p_loc_read     on miniapps_tools.locations        for select using (true);
+create policy p_mv_read      on miniapps_tools.item_movements   for select using (true);
 
--- コトの追加（持出/返却）は認証ユーザーに許可
-create policy p_mv_insert    on miniapps_tools.item_movements   for insert with check (auth.role() = 'authenticated');
+-- コトの追加（持出/返却）
+create policy p_mv_insert    on miniapps_tools.item_movements   for insert with check (true);
 
 -- append-only 担保：movements の UPDATE/DELETE ポリシーは作らない＝禁止。
 --   訂正は「打消しイベント」を新規 INSERT して表現する。
 
--- マスタ編集（items/units/locations の登録・更新）はMVPでは認証ユーザー可。
+-- マスタ編集（items/units/locations の登録・更新）はMVPでは全員可。
 --   将来 admin ロールに絞る。
-create policy p_items_write  on miniapps_tools.items            for insert with check (auth.role() = 'authenticated');
-create policy p_items_update on miniapps_tools.items            for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
-create policy p_units_write  on miniapps_tools.individual_units for insert with check (auth.role() = 'authenticated');
-create policy p_units_update on miniapps_tools.individual_units for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
-create policy p_loc_write    on miniapps_tools.locations        for insert with check (auth.role() = 'authenticated');
+create policy p_items_write  on miniapps_tools.items            for insert with check (true);
+create policy p_items_update on miniapps_tools.items            for update using (true) with check (true);
+create policy p_units_write  on miniapps_tools.individual_units for insert with check (true);
+create policy p_units_update on miniapps_tools.individual_units for update using (true) with check (true);
+create policy p_loc_write    on miniapps_tools.locations        for insert with check (true);
 
 -- ============================================================================
 -- E. updated_at 自動更新トリガ（items のみ）
