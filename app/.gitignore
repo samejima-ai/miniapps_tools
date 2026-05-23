@@ -8,6 +8,13 @@ dist/
 out/
 build/
 tsconfig.tsbuildinfo
+tsconfig.worker.tsbuildinfo
+
+# Serwist (PWA) — auto-generated SW + workbox runtime
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+public/workbox-*.js
 
 # Environment
 .env
