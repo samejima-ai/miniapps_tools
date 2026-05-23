@@ -18,6 +18,7 @@ function mergeItemStatuses<TResolved>(
   newResolved: TResolved[],
   makeItemKey: (resolved: TResolved) => string,
   getExtractedName: (resolved: TResolved) => string,
+  isConfirmable: (resolved: TResolved) => boolean,
 ): StrokeItem<TResolved>[] {
   const statusMap = new Map<string, "confirmed" | "skipped">();
   for (const item of oldItems) {
@@ -34,8 +35,13 @@ function mergeItemStatuses<TResolved>(
       ? (oldItem.originalExtractedName ?? getExtractedName(oldItem.resolved))
       : getExtractedName(r);
 
-    if (oldStatus) {
-      return { resolved: r, status: oldStatus, originalExtractedName };
+    // confirmed は再抽出後に確定可能でなくなったら pending に戻す。
+    // skipped は意思表示なのでそのまま引き継ぐ。
+    if (oldStatus === "confirmed" && isConfirmable(r)) {
+      return { resolved: r, status: "confirmed" as const, originalExtractedName };
+    }
+    if (oldStatus === "skipped") {
+      return { resolved: r, status: "skipped" as const, originalExtractedName };
     }
     return { resolved: r, status: "pending" as const, originalExtractedName };
   });
@@ -195,6 +201,7 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
           result.resolved,
           configRef.current.makeItemKey,
           configRef.current.getExtractedName,
+          configRef.current.isConfirmable,
         );
 
         setStrokes((prev) =>

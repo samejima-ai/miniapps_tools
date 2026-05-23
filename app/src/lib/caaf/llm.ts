@@ -2,8 +2,11 @@
  * CaaF LLM Pipeline — Gemini API utilities.
  *
  * Shared across domains for structured JSON extraction.
- * Server-only: import only from server actions or server components.
+ * Server-only: the `import "server-only"` below makes Next.js bundler
+ * fail the build if a client component imports this module.
  */
+
+import "server-only";
 
 const GEMINI_MODEL = "gemini-2.0-flash-lite";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;

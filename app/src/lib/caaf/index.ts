@@ -1,12 +1,14 @@
 /**
- * CaaF (Chat as a Form) — Public API
+ * CaaF (Chat as a Form) — Client-safe Public API
  *
- * Generic framework for chat-driven data entry with:
- * 1. Stroke state machine (input → extract → review → confirm → done)
- * 2. LLM extraction pipeline (Gemini API + Zod validation)
- * 3. 3-layer matching (alias → ILIKE → LLM similarity)
- * 4. Alias auto-learning (post-confirmation UPSERT)
- * 5. Signal color system (confidence-based UI feedback)
+ * Generic framework for chat-driven data entry:
+ * - Stroke state machine hook (input → extract → review → save → done)
+ * - Signal color determination (confidence × ambiguities)
+ *
+ * Server-only modules (Gemini API / alias DB writes) are NOT re-exported here.
+ * Import them directly from their submodules from server actions / server components:
+ *   import { callGeminiJSON, isGeminiConfigured } from "@/lib/caaf/llm";
+ *   import { learnAlias } from "@/lib/caaf/alias";
  */
 
 export type {
@@ -25,5 +27,3 @@ export type {
 
 export { useCaaF } from "./use-caaf";
 export { determineSignal } from "./signal";
-export { callGemini, callGeminiJSON, isGeminiConfigured } from "./llm";
-export { learnAlias, type AliasTableConfig } from "./alias";
