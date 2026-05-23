@@ -157,6 +157,7 @@ export default function InputPage() {
           currentUser.id,
           null,
           stroke.resolvedProject?.projectId ?? null,
+          stroke.resolvedProject?.projectName ?? null,
         );
 
         updateStroke(strokeId, {
@@ -380,6 +381,27 @@ export default function InputPage() {
   }, []);
 
   // ── 番号選択（no_unit_specified / unit_missing 時） ──
+  // ── 案件候補選択（複数マッチ時） ──
+  const handleSelectProject = useCallback(
+    (strokeId: string, projectId: string, projectName: string) => {
+      setStrokes((prev) =>
+        prev.map((s) => {
+          if (s.id !== strokeId) return s;
+          return {
+            ...s,
+            resolvedProject: {
+              projectId,
+              projectName,
+              status: "matched" as const,
+              candidates: [],
+            },
+          };
+        }),
+      );
+    },
+    [],
+  );
+
   const handleSelectUnit = useCallback(
     (strokeId: string, itemIndex: number, unitNumber: number) => {
       setStrokes((prev) =>
@@ -621,6 +643,43 @@ export default function InputPage() {
                             — {stroke.items.length}件
                           </span>
                         </div>
+
+                        {/* 案件候補ピッカー（複数マッチ時） */}
+                        {stroke.resolvedProject?.status === "multiple" &&
+                          stroke.resolvedProject.candidates.length > 0 && (
+                            <div className="border border-warning/30 bg-warning/5 rounded-md p-sm flex flex-col gap-xs">
+                              <div className="text-label-xs text-warning font-bold">
+                                案件候補が複数あります — 選択してください
+                              </div>
+                              <div className="flex flex-col gap-xs">
+                                {stroke.resolvedProject.candidates.map((c) => {
+                                  const isSelected =
+                                    stroke.resolvedProject?.projectId === c.projectId;
+                                  return (
+                                    <button
+                                      key={c.projectId}
+                                      type="button"
+                                      onClick={() =>
+                                        handleSelectProject(
+                                          stroke.id,
+                                          c.projectId,
+                                          c.name,
+                                        )
+                                      }
+                                      className={`text-left text-body-sm rounded-md px-md py-sm min-h-[40px] border transition-colors ${
+                                        isSelected
+                                          ? "bg-primary text-surface border-primary font-bold"
+                                          : "bg-surface text-ink border-divider"
+                                      }`}
+                                    >
+                                      {isSelected ? "✓ " : ""}
+                                      {c.name}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
 
                         {/* 返却の場合: 一覧タブへ誘導 */}
                         {stroke.extraction.action === "return" ? (

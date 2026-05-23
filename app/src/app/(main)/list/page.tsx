@@ -16,12 +16,18 @@
 
 import { UnitCard } from "@/components/unit-card";
 import { insertReturnBatch } from "@/lib/supabase/movements";
+import {
+  fetchEmployeesByIds,
+  fetchProjectsByIds,
+} from "@/lib/supabase/projects";
 import { listCurrentlyOut } from "@/lib/supabase/views";
 import { useUser } from "@/lib/user-context";
 import type { CurrentlyOut } from "@/types";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Scope = "mine" | "all";
+
+const NO_PROJECT_KEY = "__no_project__";
 
 /** デモデータ（Supabase 未接続時） */
 const DEMO_DATA: CurrentlyOut[] = [
@@ -74,10 +80,12 @@ export default function ListPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [items, setItems] = useState<CurrentlyOut[]>([]);
+  const [projectMap, setProjectMap] = useState<Record<string, string>>({});
+  const [employeeMap, setEmployeeMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [returning, setReturning] = useState(false);
 
-  // データ読み込み
+  // データ読み込み + 名前解決
   useEffect(() => {
     async function load() {
       setLoading(true);
@@ -93,6 +101,29 @@ export default function ListPage() {
           holderId: scope === "mine" ? currentUser?.id : undefined,
         });
         setItems(data);
+
+        // 案件 / 社員の名前を本番 public スキーマから一括取得
+        const projectIds = [
+          ...new Set(
+            data
+              .map((i) => i.currentProjectId)
+              .filter((id): id is string => !!id),
+          ),
+        ];
+        const holderIds = [
+          ...new Set(
+            data
+              .map((i) => i.currentHolderId)
+              .filter((id): id is string => !!id),
+          ),
+        ];
+
+        const [projects, employees] = await Promise.all([
+          fetchProjectsByIds(projectIds),
+          fetchEmployeesByIds(holderIds),
+        ]);
+        setProjectMap(projects);
+        setEmployeeMap(employees);
       } catch {
         setItems(DEMO_DATA);
       } finally {
@@ -122,6 +153,47 @@ export default function ListPage() {
 
     return result;
   }, [items, scope, currentUser, searchQuery]);
+
+  // プロジェクト別にグルーピング
+  const groupedByProject = useMemo(() => {
+    const groups = new Map<string, CurrentlyOut[]>();
+    for (const item of filteredItems) {
+      const key = item.currentProjectId ?? NO_PROJECT_KEY;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.push(item);
+      } else {
+        groups.set(key, [item]);
+      }
+    }
+    // 各グループ内は last_moved_at 降順（filteredItems が既に降順）
+    // グループ順: 案件マッチあり → 未割当
+    const entries: Array<{
+      projectId: string | null;
+      projectName: string;
+      items: CurrentlyOut[];
+    }> = [];
+    for (const [key, list] of groups) {
+      if (key === NO_PROJECT_KEY) continue;
+      entries.push({
+        projectId: key,
+        projectName: projectMap[key] ?? "(案件名取得中)",
+        items: list,
+      });
+    }
+    // 名前昇順
+    entries.sort((a, b) => a.projectName.localeCompare(b.projectName, "ja"));
+    // 未割当を末尾に
+    const noProj = groups.get(NO_PROJECT_KEY);
+    if (noProj) {
+      entries.push({
+        projectId: null,
+        projectName: "案件未割当",
+        items: noProj,
+      });
+    }
+    return entries;
+  }, [filteredItems, projectMap]);
 
   // 返却モード: 選択トグル
   const toggleSelect = useCallback((unitId: string) => {
@@ -184,6 +256,66 @@ export default function ListPage() {
       setReturning(false);
     }
   }, [selectedIds, currentUser, filteredItems, exitReturnMode]);
+
+  // クイック返却（単発、確認なし）
+  const handleQuickReturn = useCallback(
+    async (item: CurrentlyOut) => {
+      if (!currentUser) return;
+      try {
+        if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+          const { createClient } = await import("@/lib/supabase/client");
+          const supabase = createClient();
+          await insertReturnBatch(
+            supabase,
+            [
+              {
+                itemId: item.itemId,
+                unitId: item.unitId,
+                fromLocationId: null,
+                toLocationId: null,
+                projectId: item.currentProjectId,
+              },
+            ],
+            currentUser.id,
+          );
+        }
+        // UI 先行反映
+        setItems((prev) => prev.filter((i) => i.unitId !== item.unitId));
+      } catch (err) {
+        console.error("Quick return failed:", err);
+      }
+    },
+    [currentUser],
+  );
+
+  // 案件一括返却（プロジェクトグループ内全工具を返却）
+  const handleReturnProject = useCallback(
+    async (groupItems: CurrentlyOut[]) => {
+      if (groupItems.length === 0 || !currentUser) return;
+      try {
+        if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+          const { createClient } = await import("@/lib/supabase/client");
+          const supabase = createClient();
+          await insertReturnBatch(
+            supabase,
+            groupItems.map((i) => ({
+              itemId: i.itemId,
+              unitId: i.unitId,
+              fromLocationId: null,
+              toLocationId: null,
+              projectId: i.currentProjectId,
+            })),
+            currentUser.id,
+          );
+        }
+        const ids = new Set(groupItems.map((i) => i.unitId));
+        setItems((prev) => prev.filter((i) => !ids.has(i.unitId)));
+      } catch (err) {
+        console.error("Project return failed:", err);
+      }
+    },
+    [currentUser],
+  );
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -287,15 +419,55 @@ export default function ListPage() {
             </div>
           </div>
         ) : (
-          <div className="flex flex-col gap-sm">
-            {filteredItems.map((item) => (
-              <UnitCard
-                key={item.unitId}
-                item={item}
-                returnMode={returnMode}
-                selected={selectedIds.has(item.unitId)}
-                onToggleSelect={toggleSelect}
-              />
+          <div className="flex flex-col gap-lg">
+            {groupedByProject.map((group) => (
+              <div
+                key={group.projectId ?? NO_PROJECT_KEY}
+                className="flex flex-col gap-sm"
+              >
+                {/* プロジェクトヘッダー */}
+                <div className="flex items-center gap-sm">
+                  <div className="flex-1 min-w-0">
+                    <div
+                      className={`text-body-sm font-bold truncate ${
+                        group.projectId ? "text-ink" : "text-text-secondary"
+                      }`}
+                    >
+                      {group.projectId ? "📁 " : "📋 "}
+                      {group.projectName}
+                    </div>
+                    <div className="text-label-xs text-text-secondary">
+                      {group.items.length}件
+                    </div>
+                  </div>
+                  {/* 案件一括返却（非 returnMode 時かつ 2件以上時のみ） */}
+                  {!returnMode && group.items.length >= 2 && (
+                    <button
+                      type="button"
+                      onClick={() => handleReturnProject(group.items)}
+                      className="text-success text-label-xs font-bold border border-success rounded-md px-md py-xs min-h-[32px] hover:bg-success/5 transition-colors"
+                    >
+                      全件返却
+                    </button>
+                  )}
+                </div>
+                {/* 工具カード */}
+                {group.items.map((item) => (
+                  <UnitCard
+                    key={item.unitId}
+                    item={item}
+                    returnMode={returnMode}
+                    selected={selectedIds.has(item.unitId)}
+                    holderName={
+                      scope === "all" && item.currentHolderId
+                        ? employeeMap[item.currentHolderId]
+                        : null
+                    }
+                    onQuickReturn={handleQuickReturn}
+                    onToggleSelect={toggleSelect}
+                  />
+                ))}
+              </div>
             ))}
           </div>
         )}

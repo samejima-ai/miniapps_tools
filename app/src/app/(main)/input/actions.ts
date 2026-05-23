@@ -20,38 +20,111 @@ export type ResolvedProject = {
   /** マッチした最有力候補（複数候補なら先頭、未一致なら null） */
   projectId: string | null;
   projectName: string | null;
-  /** site が指定されなかった or マッチ 0 件 */
-  status: "matched" | "not_found" | "no_site";
+  /** site が指定されなかった or マッチ 0 件 / 1件 / 複数候補 */
+  status: "matched" | "not_found" | "no_site" | "multiple";
+  /** 複数候補（最大10件、status="multiple" 時のピッカー UI 用） */
+  candidates: Array<{ projectId: string; name: string }>;
 };
 
 /**
  * LLM 抽出 site → public.projects.name 部分一致照合。
- * 削除済 (deleted_at) は除外。最有力1件を返す。
+ * - 先頭 1 件マッチ → matched
+ * - 複数件 → multiple（クライアントで候補選択 UI 表示）
+ * - エイリアス（project_name_aliases）にヒット → 即解決
  */
 async function resolveProjectFromSite(siteName: string | null): Promise<ResolvedProject> {
   if (!siteName || siteName.trim() === "") {
-    return { projectId: null, projectName: null, status: "no_site" };
+    return {
+      projectId: null,
+      projectName: null,
+      status: "no_site",
+      candidates: [],
+    };
   }
   const supabase = await createPublicServerClient();
+  const supabaseTools = await createServerSupabaseClient();
+  const trimmed = siteName.trim();
+
+  // 0. プロジェクトエイリアス検索（学習済マッピング → ILIKE より優先）
+  const { data: aliasHit } = await supabaseTools
+    .from("project_name_aliases")
+    .select("id, project_id, canonical_name, use_count")
+    .eq("alias", trimmed.toLowerCase())
+    .limit(1);
+
+  if (aliasHit?.[0]) {
+    // use_count をインクリメント
+    await supabaseTools
+      .from("project_name_aliases")
+      .update({
+        use_count: (aliasHit[0].use_count as number) + 1,
+        last_used_at: new Date().toISOString(),
+      })
+      .eq("id", aliasHit[0].id);
+    return {
+      projectId: aliasHit[0].project_id as string,
+      projectName: aliasHit[0].canonical_name as string,
+      status: "matched",
+      candidates: [],
+    };
+  }
+
+  // 1. projects テーブル ILIKE 部分一致
   const { data, error } = await supabase
     .from("projects")
     .select("project_id, name")
-    .ilike("name", `%${siteName.trim()}%`)
+    .ilike("name", `%${trimmed}%`)
     .is("deleted_at", null)
-    .limit(5);
+    .limit(10);
 
   if (error || !data || data.length === 0) {
-    return { projectId: null, projectName: null, status: "not_found" };
+    return {
+      projectId: null,
+      projectName: null,
+      status: "not_found",
+      candidates: [],
+    };
   }
 
-  const top = data[0];
+  const candidates = data.map((p) => ({
+    projectId: p.project_id as string,
+    name: p.name as string,
+  }));
+
+  // 単一マッチ → 確定
+  if (candidates.length === 1) {
+    const top = candidates[0];
+    if (!top) {
+      return {
+        projectId: null,
+        projectName: null,
+        status: "not_found",
+        candidates: [],
+      };
+    }
+    return {
+      projectId: top.projectId,
+      projectName: top.name,
+      status: "matched",
+      candidates: [],
+    };
+  }
+
+  // 複数候補 → ピッカー UI 用に候補リストを返す（先頭を仮選択）
+  const top = candidates[0];
   if (!top) {
-    return { projectId: null, projectName: null, status: "not_found" };
+    return {
+      projectId: null,
+      projectName: null,
+      status: "not_found",
+      candidates: [],
+    };
   }
   return {
-    projectId: top.project_id as string,
-    projectName: top.name as string,
-    status: "matched",
+    projectId: top.projectId,
+    projectName: top.name,
+    status: "multiple",
+    candidates,
   };
 }
 
@@ -338,7 +411,12 @@ export async function extractAction(
     return {
       ...demo,
       resolved: [],
-      resolvedProject: { projectId: null, projectName: null, status: "no_site" },
+      resolvedProject: {
+        projectId: null,
+        projectName: null,
+        status: "no_site",
+        candidates: [],
+      },
     };
   }
 
@@ -436,6 +514,7 @@ export async function confirmCheckoutAction(
   movedBy: string,
   holderId: string | null,
   projectId: string | null = null,
+  projectCanonicalName: string | null = null,
 ): Promise<{ insertedCount: number; errors: string[] }> {
   const supabase = await createServerSupabaseClient();
   const errors: string[] = [];
@@ -550,6 +629,51 @@ export async function confirmCheckoutAction(
         alias,
         item_id: item.matchedItemId,
         canonical_name: item.matchedName,
+      });
+    }
+  }
+
+  // ── プロジェクトエイリアス学習 ──
+  // ユーザー入力 site と確定された project の正式名が異なる場合に学習
+  if (
+    projectId &&
+    projectCanonicalName &&
+    extraction.site &&
+    extraction.site.trim() !== "" &&
+    extraction.site.trim() !== projectCanonicalName
+  ) {
+    const siteAlias = extraction.site.trim().toLowerCase();
+    const { data: existingProjAlias } = await supabase
+      .from("project_name_aliases")
+      .select("id, project_id, use_count")
+      .eq("alias", siteAlias)
+      .maybeSingle();
+
+    if (existingProjAlias) {
+      if (existingProjAlias.project_id === projectId) {
+        await supabase
+          .from("project_name_aliases")
+          .update({
+            use_count: (existingProjAlias.use_count as number) + 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existingProjAlias.id);
+      } else {
+        await supabase
+          .from("project_name_aliases")
+          .update({
+            project_id: projectId,
+            canonical_name: projectCanonicalName,
+            use_count: 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existingProjAlias.id);
+      }
+    } else {
+      await supabase.from("project_name_aliases").insert({
+        alias: siteAlias,
+        project_id: projectId,
+        canonical_name: projectCanonicalName,
       });
     }
   }
