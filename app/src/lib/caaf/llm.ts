@@ -51,8 +51,7 @@ export async function callGemini(
   }
 
   const data = await res.json();
-  const text: string | undefined =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
   if (!text) {
     throw new Error("LLM から有効な応答がありませんでした");

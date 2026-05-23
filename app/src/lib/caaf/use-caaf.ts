@@ -11,11 +11,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  CaafConfig,
-  Stroke,
-  StrokeItem,
-} from "./types";
+import type { CaafConfig, Stroke, StrokeItem } from "./types";
 
 function mergeItemStatuses<TResolved>(
   oldItems: StrokeItem<TResolved>[],
@@ -65,6 +61,7 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: strokes はトリガー用途（値は参照しないが、追加時に末尾へスクロール）
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -100,11 +97,10 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
       updateStroke(strokeId, { phase: "saving" } as Partial<S>);
 
       try {
-        const result = await configRef.current.confirmAction(
-          stroke.extraction,
-          confirmed,
-          { userId: userIdRef.current, project: stroke.resolvedProject },
-        );
+        const result = await configRef.current.confirmAction(stroke.extraction, confirmed, {
+          userId: userIdRef.current,
+          project: stroke.resolvedProject,
+        });
 
         updateStroke(strokeId, {
           phase: "done",
@@ -159,10 +155,7 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
           return {
             ...s,
             isClarifying: true,
-            clarifications: [
-              ...s.clarifications,
-              { userText: text, systemMessage: "" },
-            ],
+            clarifications: [...s.clarifications, { userText: text, systemMessage: "" }],
           };
         }),
       );
@@ -228,8 +221,7 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
             const clarifications = [...s.clarifications];
             const last = clarifications[clarifications.length - 1];
             if (last) {
-              last.systemMessage =
-                err instanceof Error ? err.message : "修正に失敗しました";
+              last.systemMessage = err instanceof Error ? err.message : "修正に失敗しました";
             }
             return { ...s, isClarifying: false, clarifications };
           }),
@@ -385,12 +377,7 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (
-        e.key === "Enter" &&
-        !e.shiftKey &&
-        !composingRef.current &&
-        !e.nativeEvent.isComposing
-      ) {
+      if (e.key === "Enter" && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing) {
         e.preventDefault();
         handleSend();
       }
@@ -398,15 +385,12 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
     [handleSend],
   );
 
-  const handleTextChange = useCallback(
-    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      setInputText(e.target.value);
-      const el = e.target;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-    },
-    [],
-  );
+  const handleTextChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputText(e.target.value);
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
+  }, []);
 
   const handleCompositionStart = useCallback(() => {
     composingRef.current = true;
@@ -430,17 +414,14 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
     [],
   );
 
-  const updateStrokeProject = useCallback(
-    (strokeId: string, project: TProject) => {
-      setStrokes((prev) =>
-        prev.map((s) => {
-          if (s.id !== strokeId) return s;
-          return { ...s, resolvedProject: project };
-        }),
-      );
-    },
-    [],
-  );
+  const updateStrokeProject = useCallback((strokeId: string, project: TProject) => {
+    setStrokes((prev) =>
+      prev.map((s) => {
+        if (s.id !== strokeId) return s;
+        return { ...s, resolvedProject: project };
+      }),
+    );
+  }, []);
 
   const isReviewing = strokes.some((s) => s.phase === "reviewing" && !s.isClarifying);
   const isBusy = strokes.some((s) => s.isClarifying);

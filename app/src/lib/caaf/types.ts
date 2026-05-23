@@ -50,8 +50,11 @@ export type ExtractResult<TExtraction, TResolved, TProject = null> = {
   resolvedProject: TProject;
 };
 
-export type ClarifyResult<TExtraction, TResolved, TProject = null> =
-  ExtractResult<TExtraction, TResolved, TProject> & { summary: string };
+export type ClarifyResult<TExtraction, TResolved, TProject = null> = ExtractResult<
+  TExtraction,
+  TResolved,
+  TProject
+> & { summary: string };
 
 export type ConfirmResult = {
   insertedCount: number;
