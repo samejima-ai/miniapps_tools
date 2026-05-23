@@ -28,7 +28,10 @@ test.describe("E2E-010: Input empty state", () => {
     await textarea.fill("テスト入力");
     await expect(textarea).toHaveValue("テスト入力");
 
-    // 送信ボタン (>) が visible
-    // (本テストでは送信せず、入力 UI の存在のみ確認 - LLM 呼出は別シナリオ)
+    // 送信ボタンが存在し visible (テキスト送信 UI が組み立てられていること)
+    // 本テストでは送信は行わない (LLM 呼出は別シナリオで検証)。
+    // input ページの送信ボタンは textarea の隣に配置された type="button"。
+    const sendBtn = page.locator("button[type='button']").last();
+    await expect(sendBtn).toBeVisible();
   });
 });
