@@ -62,7 +62,7 @@ function makeItemKey(item: ResolvedItem): string {
   return `${item.matchedItemId ?? item.extractedName}:qty`;
 }
 
-/** 修正後の再解決で既存の確定/スキップ状態を保持する */
+/** 修正後の再解決で既存の確定/スキップ状態と originalExtractedName を保持する */
 function mergeItemStatuses(
   oldItems: StrokeItem[],
   newResolved: ResolvedItem[],
@@ -73,12 +73,24 @@ function mergeItemStatuses(
     statusMap.set(makeItemKey(item.resolved), item.status);
   }
 
-  return newResolved.map((r) => {
+  // 修正前後で「同じユーザー意図」を表すアイテムを位置で対応付けて
+  // originalExtractedName を引き継ぐ（修正でアイテム数が同じ場合）
+  const sameCount = oldItems.length === newResolved.length;
+
+  return newResolved.map((r, idx) => {
     const oldStatus = statusMap.get(makeItemKey(r));
+    const originalExtractedName = sameCount
+      ? oldItems[idx]?.originalExtractedName ?? oldItems[idx]?.resolved.extractedName
+      : r.extractedName;
+
     if (oldStatus && r.status === "matched") {
-      return { resolved: r, status: oldStatus };
+      return { resolved: r, status: oldStatus, originalExtractedName };
     }
-    return { resolved: r, status: "pending" as const };
+    return {
+      resolved: r,
+      status: "pending" as const,
+      originalExtractedName,
+    };
   });
 }
 
@@ -131,7 +143,12 @@ export default function InputPage() {
       updateStroke(strokeId, { phase: "saving" });
 
       try {
-        const resolvedToSave = confirmed.map((i) => i.resolved);
+        // エイリアス学習のため、ストローク初回抽出時の入力名で上書き
+        // (例: "充電ブロアー" → 修正で "エンジンブロワー" になっても元の名前を保持)
+        const resolvedToSave = confirmed.map((i) => ({
+          ...i.resolved,
+          extractedName: i.originalExtractedName ?? i.resolved.extractedName,
+        }));
         const result = await confirmCheckoutAction(
           stroke.extraction,
           resolvedToSave,
@@ -292,6 +309,7 @@ export default function InputPage() {
         const items: StrokeItem[] = result.resolved.map((r) => ({
           resolved: r,
           status: "pending" as const,
+          originalExtractedName: r.extractedName,
         }));
 
         setStrokes((prev) =>
@@ -457,6 +475,7 @@ export default function InputPage() {
         const items: StrokeItem[] = result.resolved.map((r) => ({
           resolved: r,
           status: "pending" as const,
+          originalExtractedName: r.extractedName,
         }));
 
         updateStroke(strokeId, {

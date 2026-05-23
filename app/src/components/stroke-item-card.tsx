@@ -14,6 +14,8 @@ export type ItemStatus = "pending" | "confirmed" | "skipped" | "error";
 export type StrokeItem = {
   resolved: ResolvedItem;
   status: ItemStatus;
+  /** ストローク初回抽出時の入力名（修正で上書きされない、エイリアス学習用） */
+  originalExtractedName?: string;
 };
 
 type Props = {

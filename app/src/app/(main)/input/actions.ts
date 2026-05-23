@@ -155,7 +155,7 @@ async function resolveAgainstMaster(
 
     const { data: aliasHit } = await supabase
       .from("item_name_aliases")
-      .select("item_id, canonical_name")
+      .select("id, item_id, canonical_name, use_count")
       .eq("alias", item.name.toLowerCase())
       .limit(1);
 
@@ -166,7 +166,17 @@ async function resolveAgainstMaster(
         .eq("id", aliasHit[0].item_id)
         .eq("is_active", true)
         .single();
-      if (aliasItem) matched = aliasItem as typeof matched;
+      if (aliasItem) {
+        matched = aliasItem as typeof matched;
+        // エイリアスが照合で実際に使われた → use_count++ (確定前でもカウント)
+        await supabase
+          .from("item_name_aliases")
+          .update({
+            use_count: (aliasHit[0].use_count as number) + 1,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", aliasHit[0].id);
+      }
     }
 
     // 1. エイリアス未ヒット → items ILIKE 部分一致
