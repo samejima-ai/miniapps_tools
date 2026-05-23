@@ -30,6 +30,8 @@ export type ResolvedItem = {
     exists: boolean;
   }>;
   availableUnits: number[];
+  /** 番号選択 UI 用: unitNumber → unitId マッピング */
+  availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
   quantity: number | null;
   confidence: number;
   status: "matched" | "not_found" | "unit_missing" | "no_unit_specified";
@@ -134,6 +136,7 @@ async function resolveAgainstMaster(
           exists: false,
         })),
         availableUnits: [],
+        availableUnitDetails: [],
         quantity: item.quantity,
         confidence: item.confidence,
         status: "not_found",
@@ -150,8 +153,12 @@ async function resolveAgainstMaster(
       .order("unit_number", { ascending: true });
 
     const availableUnits = (allUnits ?? []).map((u) => u.unit_number as number);
+    const availableUnitDetails = (allUnits ?? []).map((u) => ({
+      unitNumber: u.unit_number as number,
+      unitId: u.id as string,
+    }));
     const unitMap = new Map(
-      (allUnits ?? []).map((u) => [u.unit_number as number, u.id as string]),
+      availableUnitDetails.map((u) => [u.unitNumber, u.unitId]),
     );
 
     // 3. 指定番号の存在チェック
@@ -173,6 +180,7 @@ async function resolveAgainstMaster(
       trackingType: (matched.tracking_type as "individual" | "quantity") ?? item.trackingType,
       unitResolutions,
       availableUnits,
+      availableUnitDetails,
       quantity: item.quantity,
       confidence: item.confidence,
       status: hasUnitMissing

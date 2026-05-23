@@ -21,9 +21,10 @@ type Props = {
   onConfirm: () => void;
   onSkip: () => void;
   onUndoSkip: () => void;
+  onSelectUnit?: (unitNumber: number) => void;
 };
 
-export function StrokeItemCard({ item, onConfirm, onSkip, onUndoSkip }: Props) {
+export function StrokeItemCard({ item, onConfirm, onSkip, onUndoSkip, onSelectUnit }: Props) {
   const { resolved, status } = item;
   const canConfirm = resolved.status === "matched" && status === "pending";
 
@@ -119,20 +120,59 @@ export function StrokeItemCard({ item, onConfirm, onSkip, onUndoSkip }: Props) {
         </div>
       )}
 
-      {/* 警告 */}
+      {/* 警告 + 番号選択 UI */}
       {resolved.status === "not_found" && (
         <div className="text-label-xs text-error">
           マスタに一致する工具がありません
         </div>
       )}
       {resolved.status === "unit_missing" && (
-        <div className="text-label-xs text-error">
-          存在しない番号があります（利用可能: {resolved.availableUnits.join(", ")}番）
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-error">
+            存在しない番号があります
+          </div>
+          {resolved.availableUnits.length > 0 && (() => {
+            const selected = new Set(
+              resolved.unitResolutions.filter((u) => u.exists).map((u) => u.unitNumber),
+            );
+            const selectable = resolved.availableUnits.filter((n) => !selected.has(n));
+            return selectable.length > 0 ? (
+              <div className="flex items-center gap-xs flex-wrap">
+                <span className="text-label-xs text-text-secondary">代わりの番号:</span>
+                {selectable.map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => onSelectUnit?.(num)}
+                    className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            ) : null;
+          })()}
         </div>
       )}
       {resolved.status === "no_unit_specified" && (
-        <div className="text-label-xs text-warning">
-          番号を指定してください（利用可能: {resolved.availableUnits.join(", ")}番）
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-warning">
+            番号を選択してください
+          </div>
+          {resolved.availableUnits.length > 0 && (
+            <div className="flex items-center gap-xs flex-wrap">
+              {resolved.availableUnits.map((num) => (
+                <button
+                  key={num}
+                  type="button"
+                  onClick={() => onSelectUnit?.(num)}
+                  className="text-label-xs text-surface bg-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                >
+                  {num}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -355,6 +355,62 @@ export default function InputPage() {
     );
   }, []);
 
+  // ── 番号選択（no_unit_specified / unit_missing 時） ──
+  const handleSelectUnit = useCallback(
+    (strokeId: string, itemIndex: number, unitNumber: number) => {
+      setStrokes((prev) =>
+        prev.map((s) => {
+          if (s.id !== strokeId) return s;
+          const items = s.items.map((item, i) => {
+            if (i !== itemIndex) return item;
+            const r = item.resolved;
+
+            // availableUnitDetails から unitId を取得
+            const detail = r.availableUnitDetails.find(
+              (d) => d.unitNumber === unitNumber,
+            );
+            if (!detail) return item;
+
+            let newUnitResolutions: typeof r.unitResolutions;
+
+            if (r.status === "no_unit_specified") {
+              // 番号未指定 → 選択した番号を設定
+              newUnitResolutions = [
+                { unitNumber, unitId: detail.unitId, exists: true },
+              ];
+            } else if (r.status === "unit_missing") {
+              // 存在しない番号を選択した番号で置換（最初の1つ）
+              let replaced = false;
+              newUnitResolutions = r.unitResolutions.map((u) => {
+                if (!u.exists && !replaced) {
+                  replaced = true;
+                  return { unitNumber, unitId: detail.unitId, exists: true };
+                }
+                return u;
+              });
+            } else {
+              return item;
+            }
+
+            // ステータス再計算
+            const allExist = newUnitResolutions.every((u) => u.exists);
+
+            return {
+              resolved: {
+                ...r,
+                unitResolutions: newUnitResolutions,
+                status: (allExist ? "matched" : "unit_missing") as typeof r.status,
+              },
+              status: "pending" as const,
+            };
+          });
+          return { ...s, items };
+        }),
+      );
+    },
+    [],
+  );
+
   // ── 全件確定（matched のみ確定、それ以外はスキップ） ──
   const handleConfirmAll = useCallback((strokeId: string) => {
     setStrokes((prev) =>
@@ -552,6 +608,9 @@ export default function InputPage() {
                                 onConfirm={() => handleConfirmItem(stroke.id, i)}
                                 onSkip={() => handleSkipItem(stroke.id, i)}
                                 onUndoSkip={() => handleUndoSkip(stroke.id, i)}
+                                onSelectUnit={(num) =>
+                                  handleSelectUnit(stroke.id, i, num)
+                                }
                               />
                             ))}
 
