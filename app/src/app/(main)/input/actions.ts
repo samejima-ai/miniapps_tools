@@ -282,6 +282,14 @@ const CANDIDATE_PROPOSAL_PROMPT = `あなたは工具名の類似性判定器で
 ユーザーが入力した工具名と、マスタの工具一覧を比較して、
 意味的に近い候補を上位3件まで提案してください。
 
+### マスタ行の読み方
+"- {ID} | {正式名} [{category}/{tracking_type}]"
+  notes: {備考} （存在する場合のみ次行にインデント付きで表示）
+
+- category: tool=工具, material=資材, consumable=消耗品
+- tracking_type: individual=個体番号管理, quantity=数量管理
+- notes: 別名・メーカー・用途・互換情報などの補足。マッチ判定の参考にしてよい
+
 ### 必ず守るルール
 - JSON のみ出力。前置き・解説・markdown は禁止
 - マスタにある工具のみ提案する（IDが必要）
@@ -289,7 +297,8 @@ const CANDIDATE_PROPOSAL_PROMPT = `あなたは工具名の類似性判定器で
 - 全く似た工具がなければ空配列を返す（候補を捏造しない）
 - 「充電ブロアー」←→「エンジンブロワー」のような表記揺れ・略称・別名を許容
 - 動力源違い（電動/エンジン）など属性違いでも、用途が同じなら候補とする
-- 工具カテゴリが完全に異なるものは出さない（バッテリーをドライバの候補にしない）
+- notes に書かれた別名・メーカー・用途も類似性判定の根拠に使う
+- 工具カテゴリ（category）が完全に異なるものは出さない（バッテリーをドライバの候補にしない）
 
 ### 出力JSON形式
 {
@@ -311,10 +320,10 @@ async function augmentNotFoundWithCandidates(
   if (notFound.length === 0) return;
   if (!isGeminiConfigured()) return;
 
-  // マスタ全件取得（active のみ）
+  // マスタ全件取得（active のみ）。category と notes も渡して LLM の意味的マッチを補強
   const { data: allItems, error: itemsErr } = await supabase
     .from("items")
-    .select("id, name, tracking_type")
+    .select("id, name, tracking_type, category, notes")
     .eq("is_active", true)
     .order("name", { ascending: true });
 
@@ -324,7 +333,13 @@ async function augmentNotFoundWithCandidates(
   }
   if (!allItems || allItems.length === 0) return;
 
-  const masterList = allItems.map((i) => `- ${i.id} | ${i.name} (${i.tracking_type})`).join("\n");
+  const masterList = allItems
+    .map((i) => {
+      const base = `- ${i.id} | ${i.name} [${i.category}/${i.tracking_type}]`;
+      const notes = i.notes && String(i.notes).trim() !== "" ? `\n    notes: ${i.notes}` : "";
+      return `${base}${notes}`;
+    })
+    .join("\n");
   const queryList = notFound.map((r) => `- ${r.extractedName}`).join("\n");
 
   let parsed: unknown;
