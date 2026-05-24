@@ -68,16 +68,16 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
 
-  // 新規メッセージ（ストローク追加 / 修正指示の追加）が来たときだけ末尾へスクロールする。
-  // セレクタの選択・表示切替・確定・スキップなど既存ストローク内の更新では表示位置を維持する。
-  const prevMessageCountRef = useRef(0);
+  // 末尾へのスクロールはユーザーが送信したときだけ行う（handleSend が明示要求）。
+  // セレクタの選択・表示切替・確定・スキップ・解析完了など、既存ストローク内の
+  // あらゆる更新では表示位置を維持する（モバイルでの不快なジャンプを防ぐ）。
+  const pendingScrollRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: strokes は再レンダ後に保留スクロールを消化するためのトリガー（値は参照しない）
   useEffect(() => {
-    const messageCount = strokes.reduce((acc, s) => acc + 1 + s.clarifications.length, 0);
-    if (messageCount > prevMessageCountRef.current) {
-      const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
-    }
-    prevMessageCountRef.current = messageCount;
+    if (!pendingScrollRef.current) return;
+    pendingScrollRef.current = false;
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [strokes]);
 
   const updateStroke = useCallback((id: string, patch: Partial<S>) => {
@@ -168,6 +168,8 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
       const strokeId = reviewingStroke.id;
       const capturedItems = reviewingStroke.items;
 
+      // 送信（修正指示）したので末尾へスクロール。以降の解析完了更新ではスクロールしない。
+      pendingScrollRef.current = true;
       setStrokes((prev) =>
         prev.map((s) => {
           if (s.id !== strokeId) return s;
@@ -249,6 +251,8 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
       }
     } else {
       const id = crypto.randomUUID();
+      // 送信（新規入力）したので末尾へスクロール。以降の解析完了更新ではスクロールしない。
+      pendingScrollRef.current = true;
       setStrokes((prev) => [
         ...prev,
         {
