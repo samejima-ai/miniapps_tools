@@ -68,8 +68,14 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: strokes はトリガー用途（値は参照しないが、追加時に末尾へスクロール）
+  // 末尾へのスクロールはユーザーが送信したときだけ行う（handleSend が明示要求）。
+  // セレクタの選択・表示切替・確定・スキップ・解析完了など、既存ストローク内の
+  // あらゆる更新では表示位置を維持する（モバイルでの不快なジャンプを防ぐ）。
+  const pendingScrollRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: strokes は再レンダ後に保留スクロールを消化するためのトリガー（値は参照しない）
   useEffect(() => {
+    if (!pendingScrollRef.current) return;
+    pendingScrollRef.current = false;
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [strokes]);
@@ -162,6 +168,8 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
       const strokeId = reviewingStroke.id;
       const capturedItems = reviewingStroke.items;
 
+      // 送信（修正指示）したので末尾へスクロール。以降の解析完了更新ではスクロールしない。
+      pendingScrollRef.current = true;
       setStrokes((prev) =>
         prev.map((s) => {
           if (s.id !== strokeId) return s;
@@ -243,6 +251,8 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
       }
     } else {
       const id = crypto.randomUUID();
+      // 送信（新規入力）したので末尾へスクロール。以降の解析完了更新ではスクロールしない。
+      pendingScrollRef.current = true;
       setStrokes((prev) => [
         ...prev,
         {
