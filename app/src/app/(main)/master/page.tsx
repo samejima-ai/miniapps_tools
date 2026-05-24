@@ -605,7 +605,6 @@ function UnitsTab() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -636,6 +635,15 @@ function UnitsTab() {
   }, [reload]);
 
   const individualItems = items.filter((i) => i.trackingType === "individual");
+
+  // item ごとの「次に振るべき番号」 = max(unit_number) + 1
+  // 論理削除されたものも履歴に含まれるが、listUnits は is_active=true のみ返すため、
+  // 厳密な max は server-side で再取得が望ましい。MVP はクライアント側 active max + 1。
+  const maxByItem = new Map<string, number>();
+  for (const u of units) {
+    const cur = maxByItem.get(u.itemId) ?? 0;
+    if (u.unitNumber > cur) maxByItem.set(u.itemId, u.unitNumber);
+  }
 
   // ── 作成 ──
   const handleCreate = useCallback(
@@ -676,41 +684,10 @@ function UnitsTab() {
     [items, reload],
   );
 
-  // ── 更新 ──
-  const handleUpdate = useCallback(
-    async (id: string, unitNumber: number, notes: string) => {
-      setError(null);
-      try {
-        if (isSupabaseEnabled()) {
-          const { createClient } = await import("@/lib/supabase/client");
-          const { updateUnit } = await import("@/lib/supabase/master");
-          const supabase = createClient();
-          await updateUnit(supabase, id, {
-            unitNumber,
-            notes: notes.trim() || null,
-          });
-          await reload();
-        } else {
-          setUnits((prev) =>
-            prev.map((u) =>
-              u.id === id
-                ? { ...u, unitNumber, notes: notes.trim() || null }
-                : u,
-            ),
-          );
-        }
-        setEditingId(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [reload],
-  );
-
   // ── 論理削除 ──
   const handleDelete = useCallback(
     async (id: string, label: string) => {
-      if (!confirm(`「${label}」を削除しますか？\n(論理削除: 履歴は保持されます)`)) return;
+      if (!confirm(`「${label}」を削除しますか？\n(論理削除: 番号は欠番として残ります)`)) return;
       setError(null);
       try {
         if (isSupabaseEnabled()) {
@@ -722,19 +699,21 @@ function UnitsTab() {
         } else {
           setUnits((prev) => prev.filter((u) => u.id !== id));
         }
-        if (editingId === id) setEditingId(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [reload, editingId],
+    [reload],
   );
 
   // グループ化: item ごとに表示
-  const grouped = units.reduce<Record<string, Unit[]>>((acc, u) => {
-    const key = u.itemName;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(u);
+  const grouped = units.reduce<Record<string, { items: Unit[]; itemId: string }>>((acc, u) => {
+    const existing = acc[u.itemName];
+    if (existing) {
+      existing.items.push(u);
+    } else {
+      acc[u.itemName] = { items: [u], itemId: u.itemId };
+    }
     return acc;
   }, {});
 
@@ -744,10 +723,7 @@ function UnitsTab() {
       {!showCreate && (
         <button
           type="button"
-          onClick={() => {
-            setShowCreate(true);
-            setEditingId(null);
-          }}
+          onClick={() => setShowCreate(true)}
           className="bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] shadow-primary-cta mb-md transition-all"
         >
           + 個体を追加
@@ -760,6 +736,7 @@ function UnitsTab() {
           <div className="text-label-xs text-primary font-bold mb-sm">新規個体</div>
           <UnitCreateForm
             individualItems={individualItems}
+            maxByItem={maxByItem}
             onSubmit={handleCreate}
             onCancel={() => setShowCreate(false)}
           />
@@ -773,7 +750,7 @@ function UnitsTab() {
         </div>
       )}
 
-      {/* 一覧（item ごとグループ表示、各 unit はタップで展開編集） */}
+      {/* 一覧（item ごとグループ表示、各 unit に削除ボタン） */}
       {loading ? (
         <div className="flex items-center justify-center py-xl text-text-secondary text-body-sm">
           読み込み中...
@@ -785,60 +762,43 @@ function UnitsTab() {
         </div>
       ) : (
         <div className="flex flex-col gap-md">
-          {Object.entries(grouped).map(([itemName, groupUnits]) => (
-            <div key={itemName}>
-              <div className="text-label-xs text-text-secondary font-bold mb-xs">{itemName}</div>
-              <div className="flex flex-col gap-xs">
-                {groupUnits
-                  .sort((a, b) => a.unitNumber - b.unitNumber)
-                  .map((u) => {
-                    const isEditing = editingId === u.id;
-                    if (isEditing) {
-                      return (
-                        <div
-                          key={u.id}
-                          className="border border-primary rounded-lg p-md bg-primary-light/20"
-                        >
-                          <div className="text-label-xs text-primary font-bold mb-sm">
-                            編集中: {itemName} #{u.unitNumber}
-                          </div>
-                          <UnitEditForm
-                            initialUnitNumber={u.unitNumber}
-                            initialNotes={u.notes ?? ""}
-                            onSubmit={(num, notes) => handleUpdate(u.id, num, notes)}
-                            onCancel={() => setEditingId(null)}
-                            onDelete={() =>
-                              handleDelete(u.id, `${itemName} #${u.unitNumber}`)
-                            }
-                          />
-                        </div>
-                      );
-                    }
-                    return (
-                      <button
-                        key={u.id}
-                        type="button"
-                        onClick={() => {
-                          setEditingId(u.id);
-                          setShowCreate(false);
-                        }}
-                        className="bg-surface border border-divider rounded-md px-md py-sm shadow-card flex items-center gap-sm text-left hover:border-primary transition-colors min-h-[40px]"
-                      >
-                        <span className="bg-primary text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm">
-                          #{u.unitNumber}
+          {Object.entries(grouped).map(([itemName, group]) => {
+            const sorted = [...group.items].sort((a, b) => a.unitNumber - b.unitNumber);
+            const max = maxByItem.get(group.itemId) ?? 0;
+            return (
+              <div key={itemName}>
+                <div className="flex items-center gap-sm mb-xs">
+                  <span className="text-label-xs text-text-secondary font-bold">{itemName}</span>
+                  <span className="text-label-xs text-text-secondary">
+                    ({sorted.length}個 / 次番号 #{max + 1})
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-xs">
+                  {sorted.map((u) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => handleDelete(u.id, `${itemName} #${u.unitNumber}`)}
+                      title={u.notes ? `${u.notes}（タップで削除）` : "タップで削除"}
+                      className="group bg-surface border border-divider rounded-md px-sm py-xs shadow-card flex items-center gap-xs min-h-[36px] hover:border-error transition-colors"
+                    >
+                      <span className="bg-primary text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm">
+                        #{u.unitNumber}
+                      </span>
+                      {u.notes && (
+                        <span className="text-label-xs text-text-secondary truncate max-w-[120px]">
+                          {u.notes}
                         </span>
-                        {u.notes && (
-                          <span className="text-label-xs text-text-secondary truncate flex-1">
-                            {u.notes}
-                          </span>
-                        )}
-                        <span className="text-label-xs text-primary ml-auto shrink-0">編集</span>
-                      </button>
-                    );
-                  })}
+                      )}
+                      <span className="text-label-xs text-text-secondary group-hover:text-error">
+                        ×
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -847,10 +807,12 @@ function UnitsTab() {
 
 function UnitCreateForm({
   individualItems,
+  maxByItem,
   onSubmit,
   onCancel,
 }: {
   individualItems: Item[];
+  maxByItem: Map<string, number>;
   onSubmit: (values: UnitFormValues) => void | Promise<void>;
   onCancel: () => void;
 }) {
@@ -860,6 +822,18 @@ function UnitCreateForm({
     notes: "",
   });
   const [saving, setSaving] = useState(false);
+
+  // 工具選択時に max+1 を自動入力（ユーザーは編集可能）
+  const handleItemChange = (itemId: string) => {
+    const nextNumber = (maxByItem.get(itemId) ?? 0) + 1;
+    setValues((v) => ({
+      ...v,
+      itemId,
+      unitNumber: itemId ? String(nextNumber) : "",
+    }));
+  };
+
+  const suggestedNext = values.itemId ? (maxByItem.get(values.itemId) ?? 0) + 1 : null;
 
   const handleSubmit = async () => {
     if (!values.itemId || !values.unitNumber.trim()) return;
@@ -875,24 +849,34 @@ function UnitCreateForm({
     <div className="flex flex-col gap-sm">
       <select
         value={values.itemId}
-        onChange={(e) => setValues((v) => ({ ...v, itemId: e.target.value }))}
+        onChange={(e) => handleItemChange(e.target.value)}
         className="w-full border border-divider rounded-md px-md py-sm text-body-sm bg-surface"
       >
         <option value="">工具を選択...</option>
-        {individualItems.map((item) => (
-          <option key={item.id} value={item.id}>
-            {item.name}
-          </option>
-        ))}
+        {individualItems.map((item) => {
+          const next = (maxByItem.get(item.id) ?? 0) + 1;
+          return (
+            <option key={item.id} value={item.id}>
+              {item.name}（次: #{next}）
+            </option>
+          );
+        })}
       </select>
-      <input
-        type="number"
-        value={values.unitNumber}
-        onChange={(e) => setValues((v) => ({ ...v, unitNumber: e.target.value }))}
-        placeholder="番号（例: 11）"
-        min={1}
-        className="w-full border border-divider rounded-md px-md py-sm text-body-md font-mono placeholder:text-text-secondary focus:outline-none focus:border-primary bg-surface"
-      />
+      <div>
+        <input
+          type="number"
+          value={values.unitNumber}
+          onChange={(e) => setValues((v) => ({ ...v, unitNumber: e.target.value }))}
+          placeholder="番号"
+          min={1}
+          className="w-full border border-divider rounded-md px-md py-sm text-body-md font-mono placeholder:text-text-secondary focus:outline-none focus:border-primary bg-surface"
+        />
+        {suggestedNext !== null && (
+          <div className="text-label-xs text-text-secondary mt-xs">
+            次の番号は #{suggestedNext}（欠番埋めない運用）
+          </div>
+        )}
+      </div>
       <input
         type="text"
         value={values.notes}
@@ -915,81 +899,6 @@ function UnitCreateForm({
           className="px-lg border border-divider text-text-secondary rounded-md py-sm min-h-[44px]"
         >
           取消
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function UnitEditForm({
-  initialUnitNumber,
-  initialNotes,
-  onSubmit,
-  onCancel,
-  onDelete,
-}: {
-  initialUnitNumber: number;
-  initialNotes: string;
-  onSubmit: (unitNumber: number, notes: string) => void | Promise<void>;
-  onCancel: () => void;
-  onDelete: () => void;
-}) {
-  const [unitNumber, setUnitNumber] = useState(String(initialUnitNumber));
-  const [notes, setNotes] = useState(initialNotes);
-  const [saving, setSaving] = useState(false);
-
-  const handleSubmit = async () => {
-    const num = Number.parseInt(unitNumber, 10);
-    if (Number.isNaN(num) || num <= 0) return;
-    setSaving(true);
-    try {
-      await onSubmit(num, notes);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-sm">
-      <div className="flex items-center gap-sm">
-        <span className="text-label-xs text-text-secondary">#</span>
-        <input
-          type="number"
-          value={unitNumber}
-          onChange={(e) => setUnitNumber(e.target.value)}
-          min={1}
-          className="flex-1 border border-divider rounded-md px-md py-sm text-body-md font-mono focus:outline-none focus:border-primary bg-surface"
-        />
-      </div>
-      <input
-        type="text"
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        placeholder="備考（任意）"
-        className="w-full border border-divider rounded-md px-md py-sm text-body-sm placeholder:text-text-secondary focus:outline-none focus:border-primary bg-surface"
-      />
-      <div className="flex gap-sm">
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={!unitNumber.trim() || saving}
-          className="flex-1 bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] disabled:opacity-40"
-        >
-          {saving ? "保存中..." : "保存"}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="px-lg border border-divider text-text-secondary rounded-md py-sm min-h-[44px]"
-        >
-          取消
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="px-md border border-error text-error rounded-md py-sm min-h-[44px]"
-        >
-          削除
         </button>
       </div>
     </div>
