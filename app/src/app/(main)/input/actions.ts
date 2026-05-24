@@ -494,15 +494,80 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
     }
 
     // 1. エイリアス未ヒット → items ILIKE 部分一致
+    //    複数ヒットした場合は単純先頭採用せず、候補リストとして提示する
+    let ilikeCandidates: Array<{ id: string; name: string; tracking_type: string }> = [];
     if (!matched) {
       const { data: matchedItems } = await supabase
         .from("items")
         .select("id, name, tracking_type")
         .ilike("name", `%${item.name}%`)
         .eq("is_active", true)
-        .limit(5);
+        .order("name", { ascending: true })
+        .limit(10);
 
-      matched = matchedItems?.[0] as typeof matched;
+      ilikeCandidates = (matchedItems ?? []) as typeof ilikeCandidates;
+
+      // 単一ヒットのみ matched として確定。複数ヒットは下で候補提示に回す
+      if (ilikeCandidates.length === 1) {
+        matched = ilikeCandidates[0];
+      }
+    }
+
+    // 1b. 複数 ILIKE ヒット → 曖昧として候補提示モードへ
+    if (!matched && ilikeCandidates.length > 1) {
+      // 確度スコア: 完全一致(1.0) > 前方一致(0.9) > 含む(0.7)
+      const query = item.name.trim().toLowerCase();
+      const scored = ilikeCandidates.map((c) => {
+        const name = (c.name as string).toLowerCase();
+        let confidence: number;
+        if (name === query) confidence = 1.0;
+        else if (name.startsWith(query)) confidence = 0.9;
+        else confidence = 0.7;
+        return { ...c, confidence };
+      });
+      scored.sort((a, b) => b.confidence - a.confidence);
+
+      // 各候補の availableUnits を一括取得
+      const candidateIds = scored.map((c) => c.id);
+      const { data: candidateUnits } = await supabase
+        .from("individual_units")
+        .select("id, item_id, unit_number")
+        .in("item_id", candidateIds)
+        .eq("is_active", true)
+        .order("unit_number", { ascending: true });
+
+      const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
+      for (const u of candidateUnits ?? []) {
+        const itemId = u.item_id as string;
+        const list = unitsByItem.get(itemId) ?? [];
+        list.push({ unitNumber: u.unit_number as number, unitId: u.id as string });
+        unitsByItem.set(itemId, list);
+      }
+
+      resolved.push({
+        extractedName: item.name,
+        matchedName: null,
+        matchedItemId: null,
+        trackingType: item.trackingType,
+        unitResolutions: [],
+        availableUnits: [],
+        availableUnitDetails: [],
+        quantity: item.quantity,
+        confidence: item.confidence,
+        status: "candidates_proposed",
+        candidates: scored.slice(0, 5).map((c) => {
+          const details = unitsByItem.get(c.id) ?? [];
+          return {
+            itemId: c.id,
+            name: c.name,
+            trackingType: (c.tracking_type as "individual" | "quantity") ?? "individual",
+            confidence: c.confidence,
+            availableUnits: details.map((d) => d.unitNumber),
+            availableUnitDetails: details,
+          };
+        }),
+      });
+      continue;
     }
 
     if (!matched) {
