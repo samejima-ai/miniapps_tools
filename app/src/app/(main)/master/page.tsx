@@ -218,6 +218,8 @@ function ItemsTab() {
   const [formTrackingType, setFormTrackingType] = useState<"individual" | "quantity">("individual");
   const [formItemCode, setFormItemCode] = useState("");
   const [saving, setSaving] = useState(false);
+  const [genLoading, setGenLoading] = useState<Set<string>>(new Set());
+  const [genError, setGenError] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -297,6 +299,30 @@ function ItemsTab() {
   };
 
   const trackingLabel = (t: string) => (t === "individual" ? "個体管理" : "数量管理");
+
+  const handleGenerateNotes = useCallback(async (itemId: string) => {
+    setGenError(null);
+    setGenLoading((prev) => new Set(prev).add(itemId));
+    try {
+      const { generateNotesForItem } = await import("./notes-actions");
+      const result = await generateNotesForItem(itemId);
+      if (result.ok) {
+        setItems((prev) =>
+          prev.map((it) => (it.id === itemId ? { ...it, notes: result.notes } : it)),
+        );
+      } else {
+        setGenError(`${itemId.slice(0, 8)}: ${result.error}`);
+      }
+    } catch (err) {
+      setGenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenLoading((prev) => {
+        const next = new Set(prev);
+        next.delete(itemId);
+        return next;
+      });
+    }
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col overflow-y-auto px-lg pb-lg">
@@ -381,31 +407,55 @@ function ItemsTab() {
         </div>
       ) : (
         <div className="flex flex-col gap-sm">
-          {items.map((item) => (
-            <div
-              key={item.id}
-              className="bg-surface border border-divider rounded-lg px-lg py-md shadow-card flex items-center gap-md min-h-[56px]"
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-sm">
-                  <span className="text-body-md font-bold text-ink truncate">{item.name}</span>
-                  {item.itemCode && (
-                    <span className="text-label-xs font-mono text-text-secondary">
-                      {item.itemCode}
-                    </span>
-                  )}
-                </div>
-                <div className="flex gap-sm mt-xs">
-                  <span className="text-label-xs text-text-secondary">
-                    {categoryLabel(item.category)}
-                  </span>
-                  <span className="text-label-xs text-text-secondary">
-                    {trackingLabel(item.trackingType)}
-                  </span>
-                </div>
-              </div>
+          {genError && (
+            <div className="text-label-xs text-error bg-error/10 border border-error rounded-md px-md py-sm">
+              {genError}
             </div>
-          ))}
+          )}
+          {items.map((item) => {
+            const generating = genLoading.has(item.id);
+            return (
+              <div
+                key={item.id}
+                className="bg-surface border border-divider rounded-lg px-lg py-md shadow-card flex flex-col gap-sm"
+              >
+                <div className="flex items-start gap-md">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-sm flex-wrap">
+                      <span className="text-body-md font-bold text-ink truncate">{item.name}</span>
+                      {item.itemCode && (
+                        <span className="text-label-xs font-mono text-text-secondary">
+                          {item.itemCode}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex gap-sm mt-xs">
+                      <span className="text-label-xs text-text-secondary">
+                        {categoryLabel(item.category)}
+                      </span>
+                      <span className="text-label-xs text-text-secondary">
+                        {trackingLabel(item.trackingType)}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleGenerateNotes(item.id)}
+                    disabled={generating}
+                    className="text-label-xs px-md py-xs border border-divider rounded-md text-primary hover:bg-primary-light disabled:opacity-40 min-h-[36px] whitespace-nowrap"
+                    title={item.notes ? "notes を再生成（上書き）" : "AI で notes を生成"}
+                  >
+                    {generating ? "生成中..." : item.notes ? "AI 再生成" : "AI 生成"}
+                  </button>
+                </div>
+                {item.notes && (
+                  <div className="text-label-xs text-text-secondary bg-background-subtle rounded-sm px-sm py-xs">
+                    {item.notes}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:update": "playwright test --update-snapshots",
-    "test:a11y": "lighthouse-ci || echo 'lighthouse-ci is optional in MVP; install when needed'"
+    "test:a11y": "lighthouse-ci || echo 'lighthouse-ci is optional in MVP; install when needed'",
+    "generate-notes": "node scripts/generate-notes.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.5.0",
