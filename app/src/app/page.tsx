@@ -9,7 +9,7 @@
  */
 
 import { GateScreen } from "@/components/gate-screen";
-import { fetchActiveEmployees } from "@/lib/supabase/employees";
+import { fetchEmployeeByUid } from "@/lib/supabase/employees";
 import { useUser } from "@/lib/user-context";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
@@ -30,10 +30,10 @@ function RootPageInner() {
     if (!uid || autoLoginAttempted.current) return;
     autoLoginAttempted.current = true;
 
-    fetchActiveEmployees().then((employees) => {
-      const match = employees.find((e) => e.id === uid);
-      if (match) {
-        selectUser(match);
+    // employee_id と profile_id の両方で照合（Platform は auth.uid() = profile_id を送る）
+    fetchEmployeeByUid(uid).then((employee) => {
+      if (employee) {
+        selectUser(employee);
       }
     });
   }, [currentUser, router, searchParams, selectUser]);
