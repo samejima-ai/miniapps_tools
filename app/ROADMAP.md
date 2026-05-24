@@ -17,13 +17,16 @@ Phase 0 MVP 完了。F1-F7 実装済、E2E テスト 5 件、PWA manifest 対応
 
 **目標**: Vercel にデプロイし、Platform からリンクで到達可能にする。社内で使い始める。
 
+**URL**: https://miniapps-tools.vercel.app/
+
 | やること | 状態 |
 |---|---|
 | pnpm build green 確認 | done |
 | .env.example 整備 | done |
-| Vercel プロジェクト作成 + 環境変数設定 | todo |
+| Vercel プロジェクト作成 + 環境変数設定 | done |
+| Gate バイパス (`?uid=xxx`) 実装 | done |
+| 初期マスタ投入（items / units / locations） | done |
 | Platform UI に「工具管理」リンク追加 | todo |
-| 初期マスタ投入（items / units / locations） | todo |
 | 社内アナウンス + 使い方共有 | todo |
 
 **完了条件**: 現場職人 1 人以上が実データで持出・返却を記録できる状態。

@@ -2,6 +2,8 @@
 
 > FX-M P2 成果物。ハンドオフ文書 §7 準拠。
 
+**独立運用 URL**: https://miniapps-tools.vercel.app/
+
 ---
 
 ## 1. データ層境界判定
@@ -47,6 +49,8 @@
 ### 現行（独立稼働版）
 - `src/lib/user-context.tsx` に閉じ込め済
 - sessionStorage ベースの社員選択（Gate 画面）
+- Platform 経由アクセスは `?uid=<employee_id>` で Gate バイパス（自動ログイン）
+- 直接アクセス（uid なし）は社員選択 Gate を表示（仮運用ルート、本番で閉鎖）
 - `currentUser.employee_id` を全コンポーネントが `useUser()` hook 経由で取得
 
 ### 置換後（Platform 統合版）
@@ -61,7 +65,7 @@ auth.users → employees.profile_id = auth.uid()
 ### 置換手順
 1. `user-context.tsx` の `selectUser()` を `auth.uid()` → `employees` lookup に差替
 2. Gate 画面を削除（Platform middleware が認証済みを保証）
-3. `DEV_BYPASS_AUTH` 等のバイパスフラグがあれば削除（現時点で未実装のため対応不要）
+3. `?uid=xxx` の Gate バイパスロジックを削除（不要になる）
 4. `switchUser()` を削除（Platform はユーザー切替を提供しない。共有端末運用は Platform 側の設計に従う）
 
 **影響範囲**: `user-context.tsx` 1 ファイル + `page.tsx`（Gate）+ `(main)/layout.tsx`（guard）の 3 ファイルのみ。業務ロジックへの影響なし。
