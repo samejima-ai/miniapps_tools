@@ -11,7 +11,14 @@ type MovementInput = {
   itemId: string;
   unitId?: string | null;
   quantity?: number | null;
-  movementType: "checkout" | "return" | "transfer" | "inbound" | "outbound";
+  movementType:
+    | "checkout"
+    | "return"
+    | "transfer"
+    | "inbound"
+    | "outbound"
+    | "lost"
+    | "found";
   fromLocationId?: string | null;
   toLocationId?: string | null;
   projectId?: string | null;

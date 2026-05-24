@@ -13,6 +13,7 @@
  * 状態は View 経由で導出する。
  */
 
+import { useUser } from "@/lib/user-context";
 import { useCallback, useEffect, useState } from "react";
 
 type MasterTab = "items" | "units" | "locations";
@@ -38,6 +39,11 @@ type Unit = {
   unitNumber: number;
   isActive: boolean;
   notes: string | null;
+  currentStatus: string; // "in" | "out" | "lost"
+  currentHolderId: string | null;
+  lastMovedAt: string | null;
+  daysOut: number | null;
+  daysLost: number | null;
 };
 
 type Location = {
@@ -77,6 +83,11 @@ const DEMO_UNITS: Unit[] = [
     unitNumber: 7,
     isActive: true,
     notes: null,
+    currentStatus: "in",
+    currentHolderId: null,
+    lastMovedAt: null,
+    daysOut: null,
+    daysLost: null,
   },
 ];
 
@@ -603,8 +614,10 @@ type UnitFormValues = {
 function UnitsTab() {
   const [units, setUnits] = useState<Unit[]>([]);
   const [items, setItems] = useState<Item[]>([]);
+  const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [actionTargetId, setActionTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -612,19 +625,26 @@ function UnitsTab() {
     try {
       if (isSupabaseEnabled()) {
         const { createClient } = await import("@/lib/supabase/client");
-        const { listUnits, listItems } = await import("@/lib/supabase/master");
+        const { listUnits, listItems, listLocations } = await import("@/lib/supabase/master");
         const supabase = createClient();
-        const [unitData, itemData] = await Promise.all([listUnits(supabase), listItems(supabase)]);
+        const [unitData, itemData, locData] = await Promise.all([
+          listUnits(supabase),
+          listItems(supabase),
+          listLocations(supabase),
+        ]);
         setUnits(unitData);
         setItems(itemData);
+        setLocations(locData);
       } else {
         setUnits(DEMO_UNITS);
         setItems(DEMO_ITEMS);
+        setLocations(DEMO_LOCATIONS);
       }
     } catch (err) {
       console.error("listUnits failed:", err);
       setUnits(DEMO_UNITS);
       setItems(DEMO_ITEMS);
+      setLocations(DEMO_LOCATIONS);
     } finally {
       setLoading(false);
     }
@@ -673,6 +693,11 @@ function UnitsTab() {
               unitNumber: num,
               isActive: true,
               notes: values.notes.trim() || null,
+              currentStatus: "in",
+              currentHolderId: null,
+              lastMovedAt: null,
+              daysOut: null,
+              daysLost: null,
             },
           ]);
         }
@@ -687,7 +712,7 @@ function UnitsTab() {
   // ── 論理削除 ──
   const handleDelete = useCallback(
     async (id: string, label: string) => {
-      if (!confirm(`「${label}」を削除しますか？\n(論理削除: 番号は欠番として残ります)`)) return;
+      if (!confirm(`「${label}」を廃棄しますか？\n(論理削除: 番号は欠番として残ります)`)) return;
       setError(null);
       try {
         if (isSupabaseEnabled()) {
@@ -699,11 +724,68 @@ function UnitsTab() {
         } else {
           setUnits((prev) => prev.filter((u) => u.id !== id));
         }
+        setActionTargetId(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
     [reload],
+  );
+
+  // ── 紛失報告 ──
+  const handleReportLost = useCallback(
+    async (unit: Unit, locationId: string | null, notes: string, movedBy: string) => {
+      setError(null);
+      try {
+        const { reportLost } = await import("@/lib/supabase/lost");
+        const result = await reportLost({
+          itemId: unit.itemId,
+          unitId: unit.id,
+          movedBy,
+          locationId,
+          projectId: null,
+          notes: notes.trim() || null,
+        });
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+        await reload();
+        setActionTargetId(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload],
+  );
+
+  // ── 発見報告（紛失中の unit を倉庫に戻す） ──
+  const handleReportFound = useCallback(
+    async (unit: Unit, movedBy: string) => {
+      if (!confirm(`「${unit.itemName} #${unit.unitNumber}」を発見・倉庫に戻しますか？`)) return;
+      setError(null);
+      try {
+        const { reportFound } = await import("@/lib/supabase/lost");
+        // 発見場所デフォルト = 事務所・倉庫
+        const warehouse = locations.find((l) => l.name === "事務所・倉庫" && l.kind === "warehouse");
+        const result = await reportFound({
+          itemId: unit.itemId,
+          unitId: unit.id,
+          movedBy,
+          locationId: warehouse?.id ?? null,
+          notes: null,
+        });
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+        await reload();
+        setActionTargetId(null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [reload, locations],
   );
 
   // グループ化: item ごとに表示
@@ -773,34 +855,208 @@ function UnitsTab() {
                     ({sorted.length}個 / 次番号 #{max + 1})
                   </span>
                 </div>
-                <div className="flex flex-wrap gap-xs">
-                  {sorted.map((u) => (
-                    <button
-                      key={u.id}
-                      type="button"
-                      onClick={() => handleDelete(u.id, `${itemName} #${u.unitNumber}`)}
-                      title={u.notes ? `${u.notes}（タップで削除）` : "タップで削除"}
-                      className="group bg-surface border border-divider rounded-md px-sm py-xs shadow-card flex items-center gap-xs min-h-[36px] hover:border-error transition-colors"
-                    >
-                      <span className="bg-primary text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm">
-                        #{u.unitNumber}
-                      </span>
-                      {u.notes && (
-                        <span className="text-label-xs text-text-secondary truncate max-w-[120px]">
-                          {u.notes}
-                        </span>
-                      )}
-                      <span className="text-label-xs text-text-secondary group-hover:text-error">
-                        ×
-                      </span>
-                    </button>
-                  ))}
+                <div className="flex flex-col gap-xs">
+                  <div className="flex flex-wrap gap-xs">
+                    {sorted.map((u) => {
+                      const statusBg =
+                        u.currentStatus === "lost"
+                          ? "bg-error"
+                          : u.currentStatus === "out"
+                            ? "bg-warning"
+                            : "bg-primary";
+                      const statusLabel =
+                        u.currentStatus === "lost"
+                          ? `紛失${u.daysLost != null ? ` (${u.daysLost}日)` : ""}`
+                          : u.currentStatus === "out"
+                            ? `持出${u.daysOut != null ? ` (${u.daysOut}日)` : ""}`
+                            : null;
+                      const isOpen = actionTargetId === u.id;
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          onClick={() => setActionTargetId(isOpen ? null : u.id)}
+                          title={u.notes ?? undefined}
+                          className={`bg-surface border rounded-md px-sm py-xs shadow-card flex items-center gap-xs min-h-[36px] transition-colors ${
+                            isOpen ? "border-primary" : "border-divider hover:border-primary"
+                          }`}
+                        >
+                          <span
+                            className={`${statusBg} text-surface text-label-xs font-mono px-sm py-0.5 rounded-sm`}
+                          >
+                            #{u.unitNumber}
+                          </span>
+                          {statusLabel && (
+                            <span className="text-label-xs text-text-secondary">
+                              {statusLabel}
+                            </span>
+                          )}
+                          {u.notes && (
+                            <span className="text-label-xs text-text-secondary truncate max-w-[100px]">
+                              {u.notes}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* アクションメニュー（タップ展開） */}
+                  {actionTargetId &&
+                    sorted.find((u) => u.id === actionTargetId) &&
+                    (() => {
+                      const target = sorted.find((u) => u.id === actionTargetId);
+                      if (!target) return null;
+                      return (
+                        <UnitActionPopover
+                          unit={target}
+                          locations={locations}
+                          onClose={() => setActionTargetId(null)}
+                          onDelete={() =>
+                            handleDelete(target.id, `${target.itemName} #${target.unitNumber}`)
+                          }
+                          onReportLost={(locId, notes, mb) =>
+                            handleReportLost(target, locId, notes, mb)
+                          }
+                          onReportFound={(mb) => handleReportFound(target, mb)}
+                        />
+                      );
+                    })()}
                 </div>
               </div>
             );
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function UnitActionPopover({
+  unit,
+  locations,
+  onClose,
+  onDelete,
+  onReportLost,
+  onReportFound,
+}: {
+  unit: Unit;
+  locations: Location[];
+  onClose: () => void;
+  onDelete: () => void;
+  onReportLost: (locationId: string | null, notes: string, movedBy: string) => void | Promise<void>;
+  onReportFound: (movedBy: string) => void | Promise<void>;
+}) {
+  const { currentUser } = useUser();
+  const [mode, setMode] = useState<"menu" | "lost">("menu");
+  const [locId, setLocId] = useState<string>("");
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const isLost = unit.currentStatus === "lost";
+
+  if (mode === "menu") {
+    return (
+      <div className="border border-primary rounded-lg p-md bg-primary-light/20 flex flex-col gap-sm">
+        <div className="flex items-center gap-sm">
+          <span className="text-body-sm font-bold text-ink truncate">
+            {unit.itemName} #{unit.unitNumber}
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto text-label-xs text-text-secondary"
+          >
+            閉じる
+          </button>
+        </div>
+        <div className="flex flex-col gap-xs">
+          {isLost ? (
+            <button
+              type="button"
+              onClick={() => onReportFound(currentUser?.id ?? "unknown")}
+              className="bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] transition-all"
+            >
+              発見・倉庫に戻す
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setMode("lost")}
+              className="bg-error text-surface font-bold rounded-md py-sm min-h-[44px] transition-all"
+            >
+              紛失を報告
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDelete}
+            className="border border-error text-error rounded-md py-sm min-h-[44px]"
+          >
+            廃棄（マスタから削除）
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // mode === "lost" — 紛失報告フォーム
+  return (
+    <div className="border border-error rounded-lg p-md bg-error/5 flex flex-col gap-sm">
+      <div className="flex items-center gap-sm">
+        <span className="text-body-sm font-bold text-error">紛失報告</span>
+        <span className="text-label-xs text-text-secondary truncate">
+          {unit.itemName} #{unit.unitNumber}
+        </span>
+      </div>
+      <div>
+        <div className="text-label-xs text-text-secondary mb-xs">最後にあった場所（任意）</div>
+        <select
+          value={locId}
+          onChange={(e) => setLocId(e.target.value)}
+          className="w-full border border-divider rounded-md px-md py-sm text-body-sm bg-surface"
+        >
+          <option value="">未指定</option>
+          {locations.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}（{l.kind === "warehouse" ? "倉庫" : "現場"}）
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <div className="text-label-xs text-text-secondary mb-xs">状況メモ（任意）</div>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          placeholder="例: 池下現場の最終日に確認したが見当たらず"
+          className="w-full border border-divider rounded-md px-md py-sm text-body-sm placeholder:text-text-secondary focus:outline-none focus:border-primary bg-surface resize-y"
+        />
+      </div>
+      <div className="flex gap-sm">
+        <button
+          type="button"
+          disabled={submitting}
+          onClick={async () => {
+            setSubmitting(true);
+            try {
+              await onReportLost(locId || null, notes, currentUser?.id ?? "unknown");
+            } finally {
+              setSubmitting(false);
+            }
+          }}
+          className="flex-1 bg-error text-surface font-bold rounded-md py-sm min-h-[44px] disabled:opacity-40"
+        >
+          {submitting ? "報告中..." : "紛失を報告"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("menu")}
+          className="px-lg border border-divider text-text-secondary rounded-md py-sm min-h-[44px]"
+        >
+          戻る
+        </button>
+      </div>
     </div>
   );
 }

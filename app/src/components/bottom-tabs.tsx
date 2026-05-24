@@ -14,6 +14,7 @@ import { usePathname } from "next/navigation";
 const tabs = [
   { href: "/list", label: "一覧", icon: "📋" },
   { href: "/input", label: "入力", icon: "✏️" },
+  { href: "/lost", label: "紛失", icon: "🚨" },
   { href: "/master", label: "マスタ", icon: "🔧" },
 ] as const;
 

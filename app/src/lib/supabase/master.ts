@@ -114,29 +114,61 @@ type UnitInput = {
 };
 
 export async function listUnits(supabase: SupabaseClient, itemId?: string) {
-  let q = supabase
-    .from("individual_units")
-    .select("*, items!inner(name)")
-    .eq("is_active", true)
+  // v_unit_current_status から現在状態を引き、本テーブルから notes を補完
+  let statusQ = supabase
+    .from("v_unit_current_status")
+    .select(
+      "unit_id, item_id, item_name, unit_number, current_status, current_holder_id, last_moved_at, days_out, days_lost",
+    )
     .order("unit_number", { ascending: true });
 
-  if (itemId) {
-    q = q.eq("item_id", itemId);
-  }
+  if (itemId) statusQ = statusQ.eq("item_id", itemId);
 
-  const { data, error } = await q;
+  const { data: statusRows, error: statusErr } = await statusQ;
+  if (statusErr) throw new Error(`listUnits (status) failed: ${statusErr.message}`);
 
-  if (error) throw new Error(`listUnits failed: ${error.message}`);
+  const ids = (statusRows ?? []).map((r) => r.unit_id as string);
+  if (ids.length === 0) return [];
 
-  return (data ?? []).map((row) => ({
-    id: row.id as string,
-    itemId: row.item_id as string,
-    itemName: (row.items as Record<string, unknown>)?.name as string,
-    unitNumber: row.unit_number as number,
-    isActive: row.is_active as boolean,
-    notes: row.notes as string | null,
-    createdAt: row.created_at as string,
-  }));
+  const { data: noteRows, error: noteErr } = await supabase
+    .from("individual_units")
+    .select("id, notes, is_active, created_at")
+    .in("id", ids);
+
+  if (noteErr) throw new Error(`listUnits (notes) failed: ${noteErr.message}`);
+
+  const noteMap = new Map(
+    (noteRows ?? []).map((r) => [
+      r.id as string,
+      {
+        notes: r.notes as string | null,
+        isActive: r.is_active as boolean,
+        createdAt: r.created_at as string,
+      },
+    ]),
+  );
+
+  return (statusRows ?? [])
+    .map((r) => {
+      const note = noteMap.get(r.unit_id as string);
+      // is_active=false は view が除外してるが、念のため
+      if (note && !note.isActive) return null;
+      return {
+        id: r.unit_id as string,
+        itemId: r.item_id as string,
+        itemName: r.item_name as string,
+        unitNumber: r.unit_number as number,
+        isActive: note?.isActive ?? true,
+        notes: note?.notes ?? null,
+        createdAt: note?.createdAt ?? "",
+        currentStatus: (r.current_status as string) ?? "in",
+        currentHolderId: (r.current_holder_id as string | null) ?? null,
+        lastMovedAt: (r.last_moved_at as string | null) ?? null,
+        daysOut: (r.days_out as number | null) ?? null,
+        daysLost: (r.days_lost as number | null) ?? null,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
 }
 
 export async function insertUnit(supabase: SupabaseClient, input: UnitInput) {
