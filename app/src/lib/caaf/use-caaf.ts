@@ -68,10 +68,16 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: strokes はトリガー用途（値は参照しないが、追加時に末尾へスクロール）
+  // 新規メッセージ（ストローク追加 / 修正指示の追加）が来たときだけ末尾へスクロールする。
+  // セレクタの選択・表示切替・確定・スキップなど既存ストローク内の更新では表示位置を維持する。
+  const prevMessageCountRef = useRef(0);
   useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    const messageCount = strokes.reduce((acc, s) => acc + 1 + s.clarifications.length, 0);
+    if (messageCount > prevMessageCountRef.current) {
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+    prevMessageCountRef.current = messageCount;
   }, [strokes]);
 
   const updateStroke = useCallback((id: string, patch: Partial<S>) => {
