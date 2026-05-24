@@ -391,7 +391,14 @@ export function useCaaF<TExtraction, TResolved, TProject = null>(
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey && !composingRef.current && !e.nativeEvent.isComposing) {
+      // Enter は常に改行（モバイル LINE 入力と同じ感覚）。
+      // 送信はボタンタップが基本。デスクトップ向けに Ctrl/⌘+Enter のショートカットだけ残す。
+      if (
+        e.key === "Enter" &&
+        (e.ctrlKey || e.metaKey) &&
+        !composingRef.current &&
+        !e.nativeEvent.isComposing
+      ) {
         e.preventDefault();
         handleSend();
       }
