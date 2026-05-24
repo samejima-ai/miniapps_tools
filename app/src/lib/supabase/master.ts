@@ -60,6 +60,42 @@ export async function insertItem(supabase: SupabaseClient, input: ItemInput) {
   return data;
 }
 
+type ItemUpdateInput = Partial<{
+  name: string;
+  category: "tool" | "material" | "consumable";
+  trackingType: "individual" | "quantity";
+  itemCode: string | null;
+  notes: string | null;
+}>;
+
+export async function updateItem(
+  supabase: SupabaseClient,
+  itemId: string,
+  input: ItemUpdateInput,
+) {
+  // snake_case payload を必要なフィールドのみで構築
+  const payload: Record<string, unknown> = {};
+  if (input.name !== undefined) payload.name = input.name;
+  if (input.category !== undefined) payload.category = input.category;
+  if (input.trackingType !== undefined) payload.tracking_type = input.trackingType;
+  if (input.itemCode !== undefined) payload.item_code = input.itemCode;
+  if (input.notes !== undefined) payload.notes = input.notes;
+
+  if (Object.keys(payload).length === 0) {
+    throw new Error("updateItem: 更新フィールドが指定されていません");
+  }
+
+  const { data, error } = await supabase
+    .from("items")
+    .update(payload)
+    .eq("id", itemId)
+    .select()
+    .single();
+
+  if (error) throw new Error(`updateItem failed: ${error.message}`);
+  return data;
+}
+
 /** 論理削除のみ。物理削除は禁止。 */
 export async function deactivateItem(supabase: SupabaseClient, itemId: string) {
   const { error } = await supabase.from("items").update({ is_active: false }).eq("id", itemId);
@@ -115,6 +151,35 @@ export async function insertUnit(supabase: SupabaseClient, input: UnitInput) {
     .single();
 
   if (error) throw new Error(`insertUnit failed: ${error.message}`);
+  return data;
+}
+
+type UnitUpdateInput = Partial<{
+  unitNumber: number;
+  notes: string | null;
+}>;
+
+export async function updateUnit(
+  supabase: SupabaseClient,
+  unitId: string,
+  input: UnitUpdateInput,
+) {
+  const payload: Record<string, unknown> = {};
+  if (input.unitNumber !== undefined) payload.unit_number = input.unitNumber;
+  if (input.notes !== undefined) payload.notes = input.notes;
+
+  if (Object.keys(payload).length === 0) {
+    throw new Error("updateUnit: 更新フィールドが指定されていません");
+  }
+
+  const { data, error } = await supabase
+    .from("individual_units")
+    .update(payload)
+    .eq("id", unitId)
+    .select()
+    .single();
+
+  if (error) throw new Error(`updateUnit failed: ${error.message}`);
   return data;
 }
 
