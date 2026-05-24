@@ -19,6 +19,9 @@ AI能力の向上に伴い、将来的にスコープ内へ移行する可能性
 | **D-7** | `holder_id`（保持者）と `moved_by`（入力者）を統合しない | 代理入力（例: 大内くん持出をしょーや入力）を区別して保存する |
 | **D-8** | スワイプ / ロングプレス操作を実装しない | DESIGN.md準拠。明示ボタンで操作。グローブ操作前提 |
 | **D-9** | Google Workspace を業務データの保存先にしない | Supabase が SSOT。GWS は補助／エクスポートのみ |
+| **D-10** | ILIKE 複数ヒット時に先頭採用しない（M0 追加） | 複数件マッチは `candidates_proposed` として全候補を確度スコア付き提示。誤選択事故防止 |
+| **D-11** | 既に持出中の unit へ二重持出を許可しない（M0 追加） | `v_currently_out` 照合で `unit_already_out` 検出 → 確定不可。物理的に矛盾するイベントを記録しない |
+| **D-12** | 紛失と廃棄を 1 ボタンに統合しない（M0 追加） | 紛失 = 所在不明、復帰可能。廃棄 = `is_active=false`、復帰不可。語彙と UI を分ける |
 
 ---
 
@@ -27,6 +30,15 @@ AI能力の向上に伴い、将来的にスコープ内へ移行する可能性
 - `item_movements` の UPDATE / DELETE ポリシーは **作成しない**（append-only の RLS 層担保）
 - RLS を一旦無効化してデータ修正する運用は禁止（修正は打消しイベントで）
 - `items` / `individual_units` の `is_active=false` 切替以外の物理削除は禁止
+
+### M0 仮運用での GRANT 例外（ADR-005、M3 で撤回）
+
+- `anon` ロールに以下を付与済（migration 0004）:
+  - `items` / `individual_units` / `locations`: INSERT, UPDATE
+  - `item_movements`: **INSERT のみ**（UPDATE/DELETE は付与しない、D-1 維持）
+  - `item_name_aliases` / `project_name_aliases`: INSERT, UPDATE
+- 仮運用の認証モデル（Gate 画面で名前タップ、Supabase Auth セッションなし）と整合
+- **M3 Platform 統合直前に必ず revoke する**。認証経路を `auth.users` セッション経由に切替
 
 ---
 
@@ -53,6 +65,22 @@ AI能力の向上に伴い、将来的にスコープ内へ移行する可能性
 - Google Workspace へのプライマリ書き込み（業務データを SSOT 化しない、D-9）
 - LINE グループへの業務データ自動投稿（MVPでは LINE自動連携を作らない、Phase 2 候補）
 - 業務データを `localStorage` / IndexedDB に **長期保存しない**（セッションキャッシュは可）
+
+## 所在トラッキングの禁止（M0 + M2 拡張前提、ADR-006）
+
+- デフォルト所在は **事務所・倉庫**。返却・初期在庫はここに置かれる前提
+- 暗黙の場所遷移を作らない（必ず movement_type と to_location_id を明示）
+- 想定される移動経路（M2 で UI 化）:
+  - 事務所・倉庫 → 現場 / 他社譲渡 / 裏倉庫
+  - 裏倉庫 → 事務所・倉庫
+  - 現場 → 事務所・倉庫 / 別現場
+- `裏倉庫` は明示移動 (`transfer`) でのみ更新。デフォルトでは選ばれない
+
+## 紛失/廃棄の禁止（M0 追加）
+
+- 紛失 (lost) と廃棄 (`is_active=false`) を **1 ボタンに統合しない**（D-12）
+- 紛失イベントを「打ち消し」で消さない（D-1）。発見時は新規 `found` イベント INSERT
+- 紛失中 unit を持出ようとした場合の二重持出 INSERT を許可しない（D-11 と同等）
 
 ---
 

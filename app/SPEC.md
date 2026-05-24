@@ -42,6 +42,15 @@ critical
 - 個体管理（`tracking_type='individual'`）は `unit_numbers[]` の各番号で1行ずつ INSERT する
 - 数量管理（`tracking_type='quantity'`）は1行で `quantity` を INSERT する
 - 「電動工具全返却」のような対象不特定は🔴登録不可とし、一覧の返却モードへ誘導する
+- **マスタ照合の3層構造（M0 で確定）**:
+  - Layer 0: `item_name_aliases` の exact match（学習済）
+  - Layer 1: `items.name` の ILIKE 部分一致
+    - 単一ヒット → `matched`
+    - **複数ヒット → `candidates_proposed`（確度スコア降順で全候補提示）**（D-10）
+  - Layer C: LLM 意味的マッチング（Layer 0/1 で見つからない場合のみ）
+    - マスタには name + `category` + `notes` を渡す（M0 で notes/category 追加）
+- **持出中 unit の二重持出禁止**: 指定 unit が `v_currently_out` にある場合、status を `unit_already_out` として確定不可（D-11）。代替番号を picker で提示
+- Enter キーは改行（モバイル LINE 入力感覚）。送信はボタンタップ（Ctrl/⌘+Enter ショートカットあり）
 
 #### Priority
 critical
@@ -91,6 +100,7 @@ critical
 - 「全選択」「全解除」「×（閲覧モードへ復帰）」を提供
 - 選択件数バッジ表示「選択 N 点」
 - 「選択した N 点を返却」確定で、各 unit_id に対し `movement_type='return'`, `from_location_id=現場, to_location_id=倉庫, holder_id=null, moved_by=currentUserId` の行を INSERT
+- 戻し先のデフォルト location = `事務所・倉庫`（ADR-006、M2 で本実装）
 - INSERT 成功時、一覧から該当行が消える（View 経由で消える、実体の状態カラム更新は存在しない）
 - 「電動工具全返却」のような自然文 LLM 推論での全返却は実装しない（D-5）。返却は必ず本モードでの **明示選択** で行う
 
@@ -107,28 +117,38 @@ critical
 ### F5. 信号色UI（確認カード）
 
 #### 概要
-CaaF入力の確認カードを、**確信度 × マスタ参照一致** の2軸で🟢🟡🟠🔴の信号色付きで表示する。**色は表示のみ、自動 INSERT 判定には使わない**（D-3/D-4）。
+CaaF入力の確認カードを、**確信度 × マスタ参照一致 × 状態矛盾** の3軸で🟢🟡🟠🔴の信号色付きで表示する。**色は表示のみ、自動 INSERT 判定には使わない**（D-3/D-4）。
 
 #### 条件
 - 🟢 緑: 高確信(≥0.8) × マスタ全一致 × 状態矛盾なし → Phase1で自動化候補（MVPは人がタップ）
-- 🟡 黄: 中確信(0.6〜0.8) → 該当項目ハイライト、タップ確定
-- 🟠 橙: マスタ未一致あり OR 低確信(<0.6) → 新規登録 or 候補選択を促す
-- 🔴 赤: 対象不特定 / items が空 → 確定不可ボタン無効化、返却モードへ誘導文を表示
+- 🟡 黄: 中確信(0.6〜0.8) / 候補提示 (`candidates_proposed`) / 番号未指定 (`no_unit_specified`) → 該当項目ハイライト、選択 → 確定
+- 🟠 橙: マスタ未一致 (`not_found`) / 存在しない番号 (`unit_missing`) → 新規登録 or 代替番号選択を促す
+- 🔴 赤: 対象不特定 / items が空 / **持出中で二重持出不可 (`unit_already_out`)** → 確定不可ボタン無効化
+- 各個体の番号バッジは状態色で塗り分け: 青=在庫、黄=持出中（保持者名表示）、赤=不存在 or 紛失中
 
 #### Priority
 standard
 
 ---
 
-### F6. マスタ管理（items / individual_units / locations 最小）
+### F6. マスタ管理（items / individual_units / locations）
 
 #### 概要
-工具マスタ（種類）と個体（unit_number）、保管場所（倉庫＋現場）の登録・更新を行う。MVP は最小機能（一覧 + 新規作成）に絞る。
+工具マスタ（種類）と個体（unit_number）、保管場所（倉庫＋現場）の登録・更新を行う。**M0 で CRUD 完備に拡張**（インライン編集 + 論理削除）。
 
 #### 条件
-- items の登録: 名前・カテゴリ（`tool`/`material`/`consumable`）・追跡方式（`individual`/`quantity`）・任意 item_code・notes
-- individual_units の登録: 既存 item を選び unit_number を追加（item 内ユニーク、DDL の UNIQUE 制約に従う）
-- locations: kind=`warehouse`（本社倉庫）と kind=`site`（現場、`project_id` を保持）
+- items の **CRUD インライン展開 UI**（M0 で拡張）:
+  - 登録: 名前・カテゴリ（`tool`/`material`/`consumable`）・追跡方式（`individual`/`quantity`）・任意 item_code・notes
+  - 更新: 全フィールド編集可。`tracking_type` 変更は warning 表示（movements の解釈が変わる）
+  - 論理削除: `is_active=false`。物理削除禁止
+  - **AI notes 自動生成**: 個別「AI 生成」ボタン or 一括スクリプト `pnpm run generate-notes`。Gemini で別名・型番・メーカー・用途を推定（D-5 範囲内で「捏造禁止」プロンプト）
+- individual_units の **追加 + 論理削除のみ**（M0 で簡素化）:
+  - 物理ラベル番号はモノに貼られて動かないため、編集 UI は混乱の元
+  - 登録: 既存 item を選び unit_number を追加（max+1 自動提案、欠番埋めない）
+  - 論理削除（廃棄）: `is_active=false`
+  - 紛失報告: 各個体のバッジをタップ → ポップで「紛失を報告」or「廃棄」を選択（F8 参照）
+  - 個体バッジは状態色で表示: 青=在庫、黄=持出中、赤=紛失中
+- locations: kind=`warehouse`（事務所・倉庫、裏倉庫）と kind=`site`（現場、`project_id` を保持）
 - 廃止／紛失は `is_active=false` での **論理削除のみ**。物理削除は禁止
 - CaaF 入力で「マスタ未一致」工具名が出た場合、F2 確認カード内から本機能の「新規登録」を呼び出せる
 
@@ -149,6 +169,32 @@ View `v_unit_current_status.days_out` を一覧に表示し、返却漏れの可
 
 #### Priority
 standard
+
+---
+
+### F8. 紛失/発見の状態管理（M0 追加、ADR-004）
+
+#### 概要
+個体の状態モデルに `lost`（紛失中）を追加し、現場での所在不明を一時的状態として記録する。`movement_type='lost'` イベント INSERT で紛失、`'found'` で復帰。罠A 維持（状態カラム持たない、View 導出）。
+
+#### 条件
+- マスタ → 個体タブの各バッジをタップ → ポップ展開 → 「紛失を報告」 or 「廃棄（マスタから削除）」
+- 紛失報告フォーム: 最後にあった場所（locations から選択、任意）+ 状況メモ
+- 紛失中の個体は `v_lost_units` で一覧化（`days_lost` で経過日数表示）
+- 専用ページ `/lost`（下タブ 🚨 紛失）: 紛失中個体一覧、各カードに「発見」ボタン
+- 発見時、戻し先倉庫を選択可（デフォルト=事務所・倉庫）→ `movement_type='found'`, `to_location_id=<選択倉庫>` で INSERT
+- **`is_active=false`（廃棄）と `lost`（所在不明）は別概念**:
+  - 廃棄: マスタから消える、紛失リストにも出ない
+  - 紛失: マスタには残る、紛失リストに出る、発見で復帰可能
+- 一覧 F3 は `v_currently_out`（out のみ）を見るので紛失中は表示しない（独立 /lost ページが担う）
+- CaaF F2 で紛失中 unit を持出ようとした場合: `unit_already_out` 相当の二重持出禁止と同等のチェック（M2 拡張候補）
+
+#### Priority
+critical（仮運用時の業務リスク対応）
+
+#### UX制約
+- Must 閾値: 紛失報告 3 タップ以内（個体タップ → 紛失報告 → 確定）
+- 禁止挙動: 紛失と廃棄を 1 ボタンに統合しない（D-12）。意味が違う
 
 ---
 
@@ -189,18 +235,22 @@ standard
 ## 機能間相互作用（永続化レイヤ・状態共有）
 
 ### 共有レイヤ一覧
-- DB テーブル `miniapps_tools.item_movements`: 全機能（F2/F4/F7）が読み書きの中心
-- View `miniapps_tools.v_unit_current_status` / `v_currently_out`: F3/F7 が読み出し
-- マスタ `items` / `individual_units` / `locations`: F2/F4/F6 が読み、F6 が書き
+- DB テーブル `miniapps_tools.item_movements`: 全機能（F2/F4/F7/F8）が読み書きの中心
+- View `miniapps_tools.v_unit_current_status` / `v_currently_out` / `v_lost_units`: F3/F7/F8 が読み出し
+- マスタ `items` / `individual_units` / `locations`: F2/F4/F6/F8 が読み、F6 が書き
 
 ### 副作用マトリクス
 
 | 機能実行 | 影響先機能 | 副作用内容 |
 |---|---|---|
 | F2 CaaF確定（checkout INSERT） | F3/F7 | 該当個体が一覧に出現、`days_out=0` で開始 |
+| F2 CaaF実行時 | F2 自身 | 持出中 unit へ二重持出は status=`unit_already_out` で確定不可 |
 | F4 一括返却（return INSERT） | F3/F7 | 該当個体が一覧から消失（View 経由） |
 | F6 items.is_active=false | F2/F3 | CaaF抽出のマスタ参照一致から外れる、既存持出中は表示維持 |
 | F6 individual_units.is_active=false | F2/F3 | 既存持出中は表示維持、新規 checkout は不能 |
+| F6 AI notes 生成 | F2 Layer C | notes が Layer C プロンプトに渡り意味的マッチ精度向上 |
+| F8 紛失報告（lost INSERT） | F3/F8 | 該当個体が一覧から消失、`/lost` ページに出現、`days_lost=0` |
+| F8 発見報告（found INSERT） | F8 | `/lost` から消失、`v_unit_current_status='in'` 復帰 |
 
 ### 同時刻整合性ルール
 - `item_movements` の INSERT は **常に append**。同一 unit_id への複数イベントは `moved_at desc` で最新が現在状態
@@ -212,7 +262,16 @@ standard
 ## データモデル進化
 
 ### 現行バージョン
-v0.1 MVP（DDL は `supabase/migrations/0001_init_miniapps_tools.sql`）
+v0.4 M0 仮運用版（migrations 0001 → 0006 適用済）
+
+| migration | 内容 |
+|---|---|
+| 0001_init_miniapps_tools | 初期 schema / tables / views / RLS |
+| 0002_item_name_aliases | 工具名エイリアス学習 |
+| 0003_project_name_aliases | 案件名エイリアス学習 |
+| 0004_grant_anon_master_write | M0 仮運用での anon 書込権限（ADR-005） |
+| 0005_lost_found_movements | movement_type enum に lost/found 追加（ADR-004） |
+| 0006_lost_found_views | v_unit_current_status の case 拡張 + v_lost_units 新設 |
 
 ### 互換性ポリシー
 **full-compat**（MVP は新規導入のため。Phase 2 資材統合時に enum 拡張・category='material' 追加が予定されており、その際は read-compat 以上を維持する）
@@ -221,7 +280,7 @@ v0.1 MVP（DDL は `supabase/migrations/0001_init_miniapps_tools.sql`）
 expand-contract（enum 追加は expand、既存利用面の削除は contract）
 
 ### 進行中のマイグレーション
-なし（新規導入）
+なし。M3 統合直前に anon GRANT 撤回 migration を発行予定（ADR-005）。
 
 ### 将来の統合接続ポイント
 - `holder_id` / `moved_by` → `platform.employees(id)` に FK 付与（Platform 統合時）

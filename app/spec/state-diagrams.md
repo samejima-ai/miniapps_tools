@@ -112,3 +112,58 @@ signal = computeSignal(extraction)
 - `action=return` を **状態マシン内で別ルート（redirecting）に分岐** することで、CaaF カードからは返却 INSERT を絶対に発火させない（D-5、罠A補助）
 - `confirmed` は副作用（INSERT）の責務を持たず、純粋に「人が確定タップした」事実を表現。実 INSERT は外部 effect handler が担う
 - `RESET` は失敗・成功問わず `idle` へ戻る共通経路。連続入力に最適化
+
+---
+
+## 3. UnitMachine — 個体の状態ライフサイクル（M0 追加、ADR-004）
+
+```mermaid
+stateDiagram-v2
+    [*] --> in
+
+    in --> out: CHECKOUT / setHolder
+    in --> lost: REPORT_LOST
+    in --> deactivated: DEACTIVATE
+
+    out --> in: RETURN / clearHolder
+    out --> out: TRANSFER
+    out --> lost: REPORT_LOST / clearHolder
+
+    lost --> in: REPORT_FOUND
+    lost --> deactivated: DEACTIVATE
+
+    deactivated --> [*]
+```
+
+### 状態の意味
+
+| 状態 | 説明 | view 導出条件 |
+|---|---|---|
+| `in` | 倉庫在庫（デフォルト = 事務所・倉庫） | 最新 movement が `return` / `found` / null |
+| `out` | 現場に持出中 | 最新 movement が `checkout` / `transfer` |
+| `lost` | 紛失中（所在不明） | 最新 movement が `lost` |
+| `deactivated` | 論理削除（廃棄） | `is_active=false`（view から除外される、終端） |
+
+### 不変条件
+
+- **二重持出禁止（D-11）**: `out` 状態から `CHECKOUT` イベントは受理しない
+- **紛失中の持出禁止**: `lost` から `CHECKOUT` / `RETURN` は受理しない。先に `REPORT_FOUND` で `in` 復帰必須
+- **廃棄は終端（D-12）**: `deactivated` から復帰経路なし。紛失とは別概念
+- **append-only との整合**: 全遷移は新規 movement INSERT で発火。状態カラム書き換えは存在しない（罠A）
+
+### 実装との対応
+
+| マシンイベント | 実装 |
+|---|---|
+| `CHECKOUT` | `confirmCheckoutAction` で `item_movements.movement_type='checkout'` INSERT |
+| `RETURN` | F4 クイック返却で `movement_type='return'` INSERT |
+| `TRANSFER` | M2 拡張候補（現場間直接移送） |
+| `REPORT_LOST` | `reportLost()` で `movement_type='lost'` INSERT |
+| `REPORT_FOUND` | `reportFound()` で `movement_type='found'` INSERT |
+| `DEACTIVATE` | `deactivateUnit()` で `is_active=false` UPDATE |
+
+### 設計意図
+
+- view 経由で導出される実体ステータスと UI の概念モデルを一致させる（罠A の補強）
+- 二重持出は確定ハンドラ側（`confirmCheckoutAction`）でも error 返却するが、状態マシンレベルでも禁止を明示
+- 紛失と廃棄を異なる状態として持つことで、復帰可能性 / 表示先（/lost vs マスタ非表示）を区別
