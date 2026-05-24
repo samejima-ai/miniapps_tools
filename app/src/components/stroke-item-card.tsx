@@ -29,7 +29,12 @@ export function StrokeItemCard({
   onSelectCandidate,
 }: Props) {
   const { resolved, status } = item;
-  const canConfirm = resolved.status === "matched" && status === "pending";
+  // matched でかつ持出中 unit を含まない場合のみ確定可能
+  const hasAlreadyOutUnit = resolved.unitResolutions.some(
+    (u) => u.exists && u.currentHolderId,
+  );
+  const canConfirm =
+    resolved.status === "matched" && !hasAlreadyOutUnit && status === "pending";
 
   // ── 確定済み ──
   if (status === "confirmed") {
@@ -89,17 +94,27 @@ export function StrokeItemCard({
         )}
 
         {resolved.unitResolutions.length > 0 && (
-          <div className="flex gap-xs">
-            {resolved.unitResolutions.map((u) => (
-              <span
-                key={u.unitNumber}
-                className={`text-surface text-label-xs font-mono px-xs py-0.5 rounded-sm ${
-                  u.exists ? "bg-primary" : "bg-error"
-                }`}
-              >
-                #{u.unitNumber}
-              </span>
-            ))}
+          <div className="flex gap-xs flex-wrap">
+            {resolved.unitResolutions.map((u) => {
+              const isAlreadyOut = u.exists && u.currentHolderId;
+              const bg = !u.exists
+                ? "bg-error"
+                : isAlreadyOut
+                  ? "bg-warning"
+                  : "bg-primary";
+              const label = isAlreadyOut
+                ? `#${u.unitNumber} (${u.currentHolderName ?? "持出中"})`
+                : `#${u.unitNumber}`;
+              return (
+                <span
+                  key={u.unitNumber}
+                  className={`text-surface text-label-xs font-mono px-xs py-0.5 rounded-sm ${bg}`}
+                  title={isAlreadyOut ? `${u.currentHolderName ?? "他の人"}が持出中` : undefined}
+                >
+                  {label}
+                </span>
+              );
+            })}
           </div>
         )}
 
@@ -123,6 +138,37 @@ export function StrokeItemCard({
       {resolved.status === "not_found" && (
         <div className="text-label-xs text-error">マスタに一致する工具がありません</div>
       )}
+      {resolved.status === "unit_already_out" && (
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-error font-bold">
+            指定番号が既に持出中です（二重持出は不可）
+          </div>
+          {(() => {
+            const inStockAlt = resolved.availableUnitDetails.filter(
+              (u) =>
+                !u.currentHolderId &&
+                !resolved.unitResolutions.some((r) => r.unitNumber === u.unitNumber),
+            );
+            return inStockAlt.length > 0 ? (
+              <div className="flex items-center gap-xs flex-wrap">
+                <span className="text-label-xs text-text-secondary">代わりの番号:</span>
+                {inStockAlt.map((u) => (
+                  <button
+                    key={u.unitNumber}
+                    type="button"
+                    onClick={() => onSelectUnit?.(u.unitNumber)}
+                    className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                  >
+                    {u.unitNumber}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-label-xs text-text-secondary">他の在庫もありません</div>
+            );
+          })()}
+        </div>
+      )}
       {/* LLM 提案候補ピッカー */}
       {resolved.status === "candidates_proposed" && resolved.candidates.length > 0 && (
         <div className="flex flex-col gap-xs">
@@ -130,73 +176,142 @@ export function StrokeItemCard({
             似た工具が見つかりました — 選択してください
           </div>
           <div className="flex flex-col gap-xs">
-            {resolved.candidates.map((c) => (
-              <button
-                key={c.itemId}
-                type="button"
-                onClick={() => onSelectCandidate?.(c)}
-                className="text-left bg-surface border border-divider rounded-md px-md py-sm min-h-[40px] hover:border-primary transition-colors"
-              >
-                <div className="flex items-center justify-between gap-sm">
-                  <span className="text-body-sm text-ink font-bold truncate">{c.name}</span>
-                  <span className="text-label-xs text-text-secondary font-mono shrink-0">
-                    {Math.round(c.confidence * 100)}%
-                  </span>
-                </div>
-                {c.availableUnits.length > 0 && (
-                  <div className="text-label-xs text-text-secondary mt-0.5">
-                    利用可能番号: {c.availableUnits.join(", ")}
+            {resolved.candidates.map((c) => {
+              const inStock = c.availableUnitDetails.filter((u) => !u.currentHolderId);
+              const out = c.availableUnitDetails.filter((u) => u.currentHolderId);
+              return (
+                <button
+                  key={c.itemId}
+                  type="button"
+                  onClick={() => onSelectCandidate?.(c)}
+                  className="text-left bg-surface border border-divider rounded-md px-md py-sm min-h-[40px] hover:border-primary transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-sm">
+                    <span className="text-body-sm text-ink font-bold truncate">{c.name}</span>
+                    <span className="text-label-xs text-text-secondary font-mono shrink-0">
+                      {Math.round(c.confidence * 100)}%
+                    </span>
                   </div>
-                )}
-              </button>
-            ))}
+                  {inStock.length > 0 && (
+                    <div className="text-label-xs text-text-secondary mt-0.5">
+                      在庫: {inStock.map((u) => `#${u.unitNumber}`).join(" ")}
+                    </div>
+                  )}
+                  {out.length > 0 && (
+                    <div className="text-label-xs text-warning mt-0.5">
+                      持出中: {out
+                        .map((u) => `#${u.unitNumber}${u.currentHolderName ? `(${u.currentHolderName})` : ""}`)
+                        .join(" ")}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
       {resolved.status === "unit_missing" && (
         <div className="flex flex-col gap-xs">
           <div className="text-label-xs text-error">存在しない番号があります</div>
-          {resolved.availableUnits.length > 0 &&
+          {resolved.availableUnitDetails.length > 0 &&
             (() => {
               const selected = new Set(
                 resolved.unitResolutions.filter((u) => u.exists).map((u) => u.unitNumber),
               );
-              const selectable = resolved.availableUnits.filter((n) => !selected.has(n));
-              return selectable.length > 0 ? (
-                <div className="flex items-center gap-xs flex-wrap">
-                  <span className="text-label-xs text-text-secondary">代わりの番号:</span>
-                  {selectable.map((num) => (
-                    <button
-                      key={num}
-                      type="button"
-                      onClick={() => onSelectUnit?.(num)}
-                      className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
-                    >
-                      {num}
-                    </button>
-                  ))}
-                </div>
-              ) : null;
+              const candidates = resolved.availableUnitDetails.filter(
+                (u) => !selected.has(u.unitNumber),
+              );
+              const inStock = candidates.filter((u) => !u.currentHolderId);
+              const out = candidates.filter((u) => u.currentHolderId);
+              return (
+                <>
+                  {inStock.length > 0 && (
+                    <div className="flex items-center gap-xs flex-wrap">
+                      <span className="text-label-xs text-text-secondary">代わりの番号:</span>
+                      {inStock.map((u) => (
+                        <button
+                          key={u.unitNumber}
+                          type="button"
+                          onClick={() => onSelectUnit?.(u.unitNumber)}
+                          className="text-label-xs text-primary border border-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                        >
+                          {u.unitNumber}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {out.length > 0 && (
+                    <div className="flex items-start gap-xs flex-wrap">
+                      <span className="text-label-xs text-text-secondary">持出中:</span>
+                      {out.map((u) => (
+                        <span
+                          key={u.unitNumber}
+                          className="text-label-xs text-text-secondary bg-background-subtle border border-divider rounded-md px-sm py-xs min-h-[32px] font-mono inline-flex items-center gap-xs"
+                          title={u.currentHolderName ?? "持出中"}
+                        >
+                          #{u.unitNumber}
+                          {u.currentHolderName && (
+                            <span className="font-sans text-text-secondary">
+                              ({u.currentHolderName})
+                            </span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              );
             })()}
         </div>
       )}
       {resolved.status === "no_unit_specified" && (
         <div className="flex flex-col gap-xs">
           <div className="text-label-xs text-warning">番号を選択してください</div>
-          {resolved.availableUnits.length > 0 && (
-            <div className="flex items-center gap-xs flex-wrap">
-              {resolved.availableUnits.map((num) => (
-                <button
-                  key={num}
-                  type="button"
-                  onClick={() => onSelectUnit?.(num)}
-                  className="text-label-xs text-surface bg-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
-                >
-                  {num}
-                </button>
-              ))}
-            </div>
-          )}
+          {resolved.availableUnitDetails.length > 0 &&
+            (() => {
+              const inStock = resolved.availableUnitDetails.filter((u) => !u.currentHolderId);
+              const out = resolved.availableUnitDetails.filter((u) => u.currentHolderId);
+              return (
+                <>
+                  {inStock.length > 0 && (
+                    <div className="flex items-center gap-xs flex-wrap">
+                      {inStock.map((u) => (
+                        <button
+                          key={u.unitNumber}
+                          type="button"
+                          onClick={() => onSelectUnit?.(u.unitNumber)}
+                          className="text-label-xs text-surface bg-primary rounded-md px-sm py-xs min-w-[32px] min-h-[32px] font-mono font-bold"
+                        >
+                          {u.unitNumber}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {inStock.length === 0 && (
+                    <div className="text-label-xs text-error">在庫がありません</div>
+                  )}
+                  {out.length > 0 && (
+                    <div className="flex items-start gap-xs flex-wrap">
+                      <span className="text-label-xs text-text-secondary">持出中:</span>
+                      {out.map((u) => (
+                        <span
+                          key={u.unitNumber}
+                          className="text-label-xs text-text-secondary bg-background-subtle border border-divider rounded-md px-sm py-xs min-h-[32px] font-mono inline-flex items-center gap-xs"
+                          title={u.currentHolderName ?? "持出中"}
+                        >
+                          #{u.unitNumber}
+                          {u.currentHolderName && (
+                            <span className="font-sans text-text-secondary">
+                              ({u.currentHolderName})
+                            </span>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
         </div>
       )}
 

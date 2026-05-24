@@ -117,16 +117,24 @@ export default function InputPage() {
 
           let newUnitResolutions = r.unitResolutions;
           if (hasUnits) {
-            const unitMap = new Map(
-              candidate.availableUnitDetails.map((d) => [d.unitNumber, d.unitId]),
+            const detailByNum = new Map(
+              candidate.availableUnitDetails.map((d) => [d.unitNumber, d]),
             );
-            newUnitResolutions = r.unitResolutions.map((u) => ({
-              unitNumber: u.unitNumber,
-              unitId: unitMap.get(u.unitNumber) ?? null,
-              exists: unitMap.has(u.unitNumber),
-            }));
+            newUnitResolutions = r.unitResolutions.map((u) => {
+              const d = detailByNum.get(u.unitNumber);
+              return {
+                unitNumber: u.unitNumber,
+                unitId: d?.unitId ?? null,
+                exists: !!d,
+                currentHolderId: d?.currentHolderId ?? null,
+                currentHolderName: d?.currentHolderName ?? null,
+              };
+            });
           }
           const hasUnitMissing = newUnitResolutions.some((u) => !u.exists);
+          const hasUnitAlreadyOut = newUnitResolutions.some(
+            (u) => u.exists && u.currentHolderId,
+          );
 
           return {
             ...item,
@@ -140,9 +148,11 @@ export default function InputPage() {
               availableUnitDetails: candidate.availableUnitDetails,
               status: (hasUnitMissing
                 ? "unit_missing"
-                : isIndividualNoUnit
-                  ? "no_unit_specified"
-                  : "matched") as ResolvedItem["status"],
+                : hasUnitAlreadyOut
+                  ? "unit_already_out"
+                  : isIndividualNoUnit
+                    ? "no_unit_specified"
+                    : "matched") as ResolvedItem["status"],
               candidates: [],
             },
             status: "pending" as const,
@@ -178,15 +188,32 @@ export default function InputPage() {
           if (!detail) return item;
 
           let newUnitResolutions: typeof r.unitResolutions;
+          const resolutionFromDetail = {
+            unitNumber,
+            unitId: detail.unitId,
+            exists: true,
+            currentHolderId: detail.currentHolderId,
+            currentHolderName: detail.currentHolderName,
+          };
 
           if (r.status === "no_unit_specified") {
-            newUnitResolutions = [{ unitNumber, unitId: detail.unitId, exists: true }];
+            newUnitResolutions = [resolutionFromDetail];
           } else if (r.status === "unit_missing") {
             let replaced = false;
             newUnitResolutions = r.unitResolutions.map((u) => {
               if (!u.exists && !replaced) {
                 replaced = true;
-                return { unitNumber, unitId: detail.unitId, exists: true };
+                return resolutionFromDetail;
+              }
+              return u;
+            });
+          } else if (r.status === "unit_already_out") {
+            // 持出中の番号を、在庫の別番号で置き換える
+            let replaced = false;
+            newUnitResolutions = r.unitResolutions.map((u) => {
+              if (u.exists && u.currentHolderId && !replaced) {
+                replaced = true;
+                return resolutionFromDetail;
               }
               return u;
             });
@@ -195,12 +222,21 @@ export default function InputPage() {
           }
 
           const allExist = newUnitResolutions.every((u) => u.exists);
+          const stillAlreadyOut = newUnitResolutions.some(
+            (u) => u.exists && u.currentHolderId,
+          );
+          const newStatus: ResolvedItem["status"] = !allExist
+            ? "unit_missing"
+            : stillAlreadyOut
+              ? "unit_already_out"
+              : "matched";
 
           return {
+            ...item,
             resolved: {
               ...r,
               unitResolutions: newUnitResolutions,
-              status: (allExist ? "matched" : "unit_missing") as typeof r.status,
+              status: newStatus,
             },
             status: "pending" as const,
           };

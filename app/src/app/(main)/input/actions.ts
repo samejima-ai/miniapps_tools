@@ -151,13 +151,30 @@ export type ResolvedItem = {
     unitNumber: number;
     unitId: string | null;
     exists: boolean;
+    /** 個体が存在し、かつ現在誰かが持出中の場合の holder_id */
+    currentHolderId: string | null;
+    currentHolderName: string | null;
   }>;
   availableUnits: number[];
-  /** 番号選択 UI 用: unitNumber → unitId マッピング */
-  availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
+  /**
+   * 番号選択 UI 用: unitNumber → unitId マッピング + 持出状態。
+   * currentHolderId が non-null なら現在誰かが持出中 = checkout 不可。
+   */
+  availableUnitDetails: Array<{
+    unitNumber: number;
+    unitId: string;
+    currentHolderId: string | null;
+    currentHolderName: string | null;
+  }>;
   quantity: number | null;
   confidence: number;
-  status: "matched" | "not_found" | "unit_missing" | "no_unit_specified" | "candidates_proposed";
+  status:
+    | "matched"
+    | "not_found"
+    | "unit_missing"
+    | "unit_already_out"
+    | "no_unit_specified"
+    | "candidates_proposed";
   /** LLM 提案候補（status="candidates_proposed" 時のピッカー UI 用） */
   candidates: Array<{
     itemId: string;
@@ -167,7 +184,12 @@ export type ResolvedItem = {
     confidence: number;
     /** 番号選択 UI 用に候補工具の利用可能番号も先取り */
     availableUnits: number[];
-    availableUnitDetails: Array<{ unitNumber: number; unitId: string }>;
+    availableUnitDetails: Array<{
+      unitNumber: number;
+      unitId: string;
+      currentHolderId: string | null;
+      currentHolderName: string | null;
+    }>;
   }>;
 };
 
@@ -402,11 +424,12 @@ async function augmentNotFoundWithCandidates(
 
   if (allCandidateIds.size === 0) return;
 
-  // 全候補の availableUnits を一括取得
+  // 全候補の active unit + 持出状態を一括取得
+  const candidateIdsArr = Array.from(allCandidateIds);
   const { data: candidateUnits, error: unitsErr } = await supabase
     .from("individual_units")
     .select("id, item_id, unit_number")
-    .in("item_id", Array.from(allCandidateIds))
+    .in("item_id", candidateIdsArr)
     .eq("is_active", true)
     .order("unit_number", { ascending: true });
 
@@ -414,14 +437,18 @@ async function augmentNotFoundWithCandidates(
     console.warn("[Layer C] candidate units fetch failed:", unitsErr);
   }
 
-  const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
+  const outMap = await fetchCurrentlyOutByItems(supabase, candidateIdsArr);
+  const holderNameMap = await fetchHolderNames(
+    Array.from(outMap.values())
+      .map((v) => v.holderId)
+      .filter((id): id is string => !!id),
+  );
+
+  const unitsByItem = new Map<string, Array<{ id: string; unit_number: number }>>();
   for (const u of candidateUnits ?? []) {
     const itemId = u.item_id as string;
     const list = unitsByItem.get(itemId) ?? [];
-    list.push({
-      unitNumber: u.unit_number as number,
-      unitId: u.id as string,
-    });
+    list.push({ id: u.id as string, unit_number: u.unit_number as number });
     unitsByItem.set(itemId, list);
   }
 
@@ -440,7 +467,8 @@ async function augmentNotFoundWithCandidates(
     item.status = "candidates_proposed";
     item.candidates = filtered.map((c) => {
       const m = masterById.get(c.itemId);
-      const details = unitsByItem.get(c.itemId) ?? [];
+      const rawUnits = unitsByItem.get(c.itemId) ?? [];
+      const details = buildUnitDetails(rawUnits, outMap, holderNameMap);
       return {
         itemId: c.itemId,
         name: c.name,
@@ -451,6 +479,87 @@ async function augmentNotFoundWithCandidates(
       };
     });
   }
+}
+
+/**
+ * 指定 item_id 群について、現在持出中の unit_id → holder_id マップを返す。
+ * holder_id の保持者名解決は別途 fetchHolderNames を使う。
+ */
+async function fetchCurrentlyOutByItems(
+  supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  itemIds: string[],
+): Promise<Map<string, { holderId: string | null }>> {
+  const result = new Map<string, { holderId: string | null }>();
+  if (itemIds.length === 0) return result;
+  const { data, error } = await supabase
+    .from("v_currently_out")
+    .select("unit_id, current_holder_id")
+    .in("item_id", itemIds);
+  if (error) {
+    console.warn("[resolveAgainstMaster] currently_out fetch failed:", error);
+    return result;
+  }
+  for (const row of data ?? []) {
+    result.set(row.unit_id as string, {
+      holderId: (row.current_holder_id as string | null) ?? null,
+    });
+  }
+  return result;
+}
+
+/**
+ * 持出中 holder_id 群を public.employees から名前解決。
+ * best-effort: 失敗時は空 Map を返して名前は null になる。
+ */
+async function fetchHolderNames(holderIds: string[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const ids = holderIds.filter((id): id is string => !!id);
+  if (ids.length === 0) return result;
+  try {
+    const supabase = await createPublicServerClient();
+    const { data, error } = await supabase
+      .from("employees")
+      .select("employee_id, family_name, given_name")
+      .in("employee_id", ids);
+    if (error) {
+      console.warn("[resolveAgainstMaster] employees fetch failed:", error);
+      return result;
+    }
+    for (const e of data ?? []) {
+      const name =
+        `${(e.family_name as string) ?? ""} ${(e.given_name as string) ?? ""}`.trim() || "(無名)";
+      result.set(e.employee_id as string, name);
+    }
+  } catch (err) {
+    console.warn("[resolveAgainstMaster] public client unavailable:", err);
+  }
+  return result;
+}
+
+/**
+ * unit_id → { unitNumber, unitId, currentHolderId, currentHolderName } のリストを作る共通処理。
+ * availableUnits / availableUnitDetails で使う形式に統一する。
+ */
+function buildUnitDetails(
+  units: Array<{ id: string; unit_number: number }>,
+  outMap: Map<string, { holderId: string | null }>,
+  holderNameMap: Map<string, string>,
+): Array<{
+  unitNumber: number;
+  unitId: string;
+  currentHolderId: string | null;
+  currentHolderName: string | null;
+}> {
+  return units.map((u) => {
+    const out = outMap.get(u.id);
+    const holderId = out?.holderId ?? null;
+    return {
+      unitNumber: u.unit_number,
+      unitId: u.id,
+      currentHolderId: holderId,
+      currentHolderName: holderId ? (holderNameMap.get(holderId) ?? null) : null,
+    };
+  });
 }
 
 /**
@@ -527,7 +636,7 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
       });
       scored.sort((a, b) => b.confidence - a.confidence);
 
-      // 各候補の availableUnits を一括取得
+      // 各候補の active unit + 持出状態を一括取得
       const candidateIds = scored.map((c) => c.id);
       const { data: candidateUnits } = await supabase
         .from("individual_units")
@@ -536,11 +645,18 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
         .eq("is_active", true)
         .order("unit_number", { ascending: true });
 
-      const unitsByItem = new Map<string, Array<{ unitNumber: number; unitId: string }>>();
+      const outMap = await fetchCurrentlyOutByItems(supabase, candidateIds);
+      const holderNameMap = await fetchHolderNames(
+        Array.from(outMap.values())
+          .map((v) => v.holderId)
+          .filter((id): id is string => !!id),
+      );
+
+      const unitsByItem = new Map<string, Array<{ id: string; unit_number: number }>>();
       for (const u of candidateUnits ?? []) {
         const itemId = u.item_id as string;
         const list = unitsByItem.get(itemId) ?? [];
-        list.push({ unitNumber: u.unit_number as number, unitId: u.id as string });
+        list.push({ id: u.id as string, unit_number: u.unit_number as number });
         unitsByItem.set(itemId, list);
       }
 
@@ -556,7 +672,8 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
         confidence: item.confidence,
         status: "candidates_proposed",
         candidates: scored.slice(0, 5).map((c) => {
-          const details = unitsByItem.get(c.id) ?? [];
+          const rawUnits = unitsByItem.get(c.id) ?? [];
+          const details = buildUnitDetails(rawUnits, outMap, holderNameMap);
           return {
             itemId: c.id,
             name: c.name,
@@ -580,6 +697,8 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
           unitNumber: n,
           unitId: null,
           exists: false,
+          currentHolderId: null,
+          currentHolderName: null,
         })),
         availableUnits: [],
         availableUnitDetails: [],
@@ -591,7 +710,7 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
       continue;
     }
 
-    // 2. 該当工具の全個体番号を取得（候補表示用）
+    // 2. 該当工具の全個体番号 + 持出状態を取得（候補表示用）
     const { data: allUnits } = await supabase
       .from("individual_units")
       .select("id, unit_number")
@@ -599,21 +718,35 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
       .eq("is_active", true)
       .order("unit_number", { ascending: true });
 
-    const availableUnits = (allUnits ?? []).map((u) => u.unit_number as number);
-    const availableUnitDetails = (allUnits ?? []).map((u) => ({
-      unitNumber: u.unit_number as number,
-      unitId: u.id as string,
+    const rawUnits = (allUnits ?? []).map((u) => ({
+      id: u.id as string,
+      unit_number: u.unit_number as number,
     }));
+    const outMap = await fetchCurrentlyOutByItems(supabase, [matched.id]);
+    const holderNameMap = await fetchHolderNames(
+      Array.from(outMap.values())
+        .map((v) => v.holderId)
+        .filter((id): id is string => !!id),
+    );
+    const availableUnitDetails = buildUnitDetails(rawUnits, outMap, holderNameMap);
+    const availableUnits = availableUnitDetails.map((u) => u.unitNumber);
     const unitMap = new Map(availableUnitDetails.map((u) => [u.unitNumber, u.unitId]));
 
-    // 3. 指定番号の存在チェック
-    const unitResolutions = item.unitNumbers.map((num) => ({
-      unitNumber: num,
-      unitId: unitMap.get(num) ?? null,
-      exists: unitMap.has(num),
-    }));
+    // 3. 指定番号の存在チェック + 持出中チェック
+    const detailByNumber = new Map(availableUnitDetails.map((d) => [d.unitNumber, d]));
+    const unitResolutions = item.unitNumbers.map((num) => {
+      const d = detailByNumber.get(num);
+      return {
+        unitNumber: num,
+        unitId: d?.unitId ?? null,
+        exists: !!d,
+        currentHolderId: d?.currentHolderId ?? null,
+        currentHolderName: d?.currentHolderName ?? null,
+      };
+    });
 
     const hasUnitMissing = unitResolutions.some((r) => !r.exists);
+    const hasUnitAlreadyOut = unitResolutions.some((r) => r.exists && r.currentHolderId);
     // 番号必須かはマスタの tracking_type だけで判定する。LLM 抽出の trackingType が
     // 誤判定でも、quantity マスタなら番号なしで matched 扱いにする。
     const isIndividualNoUnit =
@@ -631,9 +764,11 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
       confidence: item.confidence,
       status: hasUnitMissing
         ? "unit_missing"
-        : isIndividualNoUnit
-          ? "no_unit_specified"
-          : "matched",
+        : hasUnitAlreadyOut
+          ? "unit_already_out"
+          : isIndividualNoUnit
+            ? "no_unit_specified"
+            : "matched",
       candidates: [],
     });
   }
@@ -661,6 +796,8 @@ function determineSignalWithResolution(
   if (resolved.length === 0) return baseSignal;
   if (resolved.some((r) => r.status === "not_found")) return "orange";
   if (resolved.some((r) => r.status === "unit_missing")) return "orange";
+  // unit_already_out: 既に他人が持出中 → 二重持出は明示確認が必要なので赤
+  if (resolved.some((r) => r.status === "unit_already_out")) return "red";
   // candidates_proposed: LLM 提案ありだが人間タップ未確定 → 黄（要選択）
   if (resolved.some((r) => r.status === "candidates_proposed")) return "yellow";
   if (resolved.some((r) => r.status === "no_unit_specified")) return "yellow";
@@ -767,6 +904,15 @@ export async function confirmCheckoutAction(
         if (!unit.exists || !unit.unitId) {
           errors.push(
             `「${item.matchedName}」の ${unit.unitNumber}番 は存在しません（${item.availableUnits.join(",")}番が利用可能）`,
+          );
+          continue;
+        }
+
+        // 持出中の二重持出を拒否（checkout のみ。return / transfer は対象外）
+        if (extraction.action === "checkout" && unit.currentHolderId) {
+          const holder = unit.currentHolderName ?? "他の人";
+          errors.push(
+            `「${item.matchedName}」の #${unit.unitNumber} は ${holder} が持出中です（二重持出は不可）`,
           );
           continue;
         }
