@@ -8,7 +8,8 @@
 
 import "server-only";
 
-const GEMINI_MODEL = "gemini-2.0-flash-lite";
+// gemini-2.0-flash-lite は 2026-06-01 に提供終了（404）。後継の 2.5 系へ更新。
+const GEMINI_MODEL = "gemini-2.5-flash-lite";
 const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 export type GeminiCallConfig = {
