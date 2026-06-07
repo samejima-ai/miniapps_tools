@@ -9,3 +9,5 @@
 export { createExtractor, createIntentClassifier } from "./factories";
 export { isLLMConfigured } from "./llm";
 export { createToolsAdapter, type ItemCandidate } from "./tools-adapter";
+// 工具 host サーバー結線（M-E.1）: capture（LLM+read）/ execute（write）
+export { createToolsHost } from "./host-server";

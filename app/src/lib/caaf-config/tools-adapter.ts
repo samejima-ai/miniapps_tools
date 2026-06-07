@@ -19,15 +19,15 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFAdapter, CaaFApp, CaaFField, CaaFRecord, CaaFWriteResult } from "@caaf/core";
 import { toolsAppForTracking } from "./tools-app";
 import { TOOLS_FIELDS } from "./tools-fields";
-import { type ResolvedUnit, buildMovementRows, recordToMovementInput } from "./tools-mapping";
+import {
+  type ItemCandidate,
+  type ResolvedUnit,
+  buildMovementRows,
+  recordToMovementInput,
+} from "./tools-mapping";
 
-/** read("resolve-item") が返す候補。 */
-export interface ItemCandidate {
-  itemId: string;
-  name: string;
-  trackingType: "individual" | "quantity";
-  units: ResolvedUnit[];
-}
+// ItemCandidate は tools-mapping（純モジュール）に定義。後方互換のため再エクスポートする。
+export type { ItemCandidate };
 
 type ToolsSupabase = Awaited<ReturnType<typeof createServerSupabaseClient>>;
 
