@@ -23,3 +23,6 @@ export {
   type ResolvedUnit,
   type MovementRow,
 } from "./tools-mapping";
+
+// 工具 CaaFApp 定義 + tracking_type 条件付き必須 overlay（M-D）
+export { toolsApp, toolsAppForTracking, type ToolsTracking } from "./tools-app";

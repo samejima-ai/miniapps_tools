@@ -17,6 +17,7 @@ import "server-only";
 import { insertMovement } from "@/lib/supabase/movements";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFAdapter, CaaFApp, CaaFField, CaaFRecord, CaaFWriteResult } from "@caaf/core";
+import { toolsAppForTracking } from "./tools-app";
 import { TOOLS_FIELDS } from "./tools-fields";
 import { type ResolvedUnit, buildMovementRows, recordToMovementInput } from "./tools-mapping";
 
@@ -119,7 +120,12 @@ export function createToolsAdapter(ctx: { movedBy: string }): CaaFAdapter {
   return {
     id: "tools-db",
 
-    async getSchema(_target: string): Promise<CaaFField[]> {
+    async getSchema(target: string): Promise<CaaFField[]> {
+      // tracking_type を target に渡すと条件付き必須 overlay を適用した schema を返す（M-D）。
+      // それ以外（"checkout"/"" 等、tracking 未確定）はベースの全 optional schema。
+      if (target === "individual" || target === "quantity") {
+        return toolsAppForTracking(target).schema;
+      }
       return TOOLS_FIELDS;
     },
 
