@@ -1,0 +1,14 @@
+{
+  "name": "miniapps-tools-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "typecheck:core": "pnpm --filter @caaf/core typecheck",
+    "test:core": "pnpm --filter @caaf/core test",
+    "purity:core": "pnpm --filter @caaf/core purity"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@biomejs/biome", "esbuild", "sharp"]
+  }
+}
