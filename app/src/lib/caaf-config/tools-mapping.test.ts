@@ -155,4 +155,11 @@ describe("recordToMovementInput", () => {
     expect(out.holderId).toBeNull();
     expect(out.quantity).toBe(2);
   });
+
+  it("非 string の item 値は itemId='' (未解決) として扱う（String 強制で write をすり抜けない）", () => {
+    expect(recordToMovementInput(record({ item: fv({ id: "x" }) }), { movedBy: "u" }).itemId).toBe(
+      "",
+    );
+    expect(recordToMovementInput(record({ item: fv(123) }), { movedBy: "u" }).itemId).toBe("");
+  });
 });

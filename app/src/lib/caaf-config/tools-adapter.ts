@@ -32,17 +32,21 @@ type ToolsSupabase = Awaited<ReturnType<typeof createServerSupabaseClient>>;
 
 /** item の active 個体 + v_currently_out 持出状態を解決する。 */
 async function resolveUnits(supabase: ToolsSupabase, itemId: string): Promise<ResolvedUnit[]> {
-  const { data: units } = await supabase
+  const { data: units, error: unitsErr } = await supabase
     .from("individual_units")
     .select("id, unit_number")
     .eq("item_id", itemId)
     .eq("is_active", true)
     .order("unit_number", { ascending: true });
+  if (unitsErr)
+    console.warn(`[tools-adapter] units fetch failed (item ${itemId}):`, unitsErr.message);
 
-  const { data: out } = await supabase
+  const { data: out, error: outErr } = await supabase
     .from("v_currently_out")
     .select("unit_id, current_holder_id")
     .eq("item_id", itemId);
+  if (outErr)
+    console.warn(`[tools-adapter] currently_out fetch failed (item ${itemId}):`, outErr.message);
 
   const outMap = new Map(
     (out ?? []).map((r) => [r.unit_id as string, (r.current_holder_id as string | null) ?? null]),
@@ -55,40 +59,56 @@ async function resolveUnits(supabase: ToolsSupabase, itemId: string): Promise<Re
   }));
 }
 
-/** 工具名 → 候補（alias → ILIKE）。Layer C は未実装。 */
+interface ItemRow {
+  id: string;
+  name: string;
+  tracking_type: string;
+}
+
+/** items を id 固定 or 名前 ILIKE で取得する小ヘルパー（error はログして空を返す）。 */
+async function fetchItems(
+  supabase: ToolsSupabase,
+  by: { id: string } | { ilike: string },
+): Promise<ItemRow[]> {
+  const base = supabase.from("items").select("id, name, tracking_type").eq("is_active", true);
+  const { data, error } =
+    "id" in by
+      ? await base.eq("id", by.id).limit(1)
+      : await base.ilike("name", `%${by.ilike}%`).order("name", { ascending: true }).limit(10);
+  if (error) console.warn("[tools-adapter] items fetch failed:", error.message);
+  return (data ?? []) as ItemRow[];
+}
+
+/** 工具名 → 候補（alias → ILIKE フォールバック）。Layer C は未実装。 */
 async function resolveItem(supabase: ToolsSupabase, name: string): Promise<ItemCandidate[]> {
-  const key = name.trim().toLowerCase();
+  const trimmed = name.trim();
+  const key = trimmed.toLowerCase();
   if (key === "") return [];
 
   // 0. alias 完全一致（学習済）
-  const { data: aliasHit } = await supabase
+  const { data: aliasHit, error: aliasErr } = await supabase
     .from("item_name_aliases")
     .select("item_id")
     .eq("alias", key)
     .limit(1);
+  if (aliasErr) console.warn("[tools-adapter] alias fetch failed:", aliasErr.message);
   const aliasItemId = aliasHit?.[0]?.item_id as string | undefined;
 
-  // 1. items ILIKE（alias ヒット時はその id を優先取得）
-  const query = supabase
-    .from("items")
-    .select("id, name, tracking_type")
-    .eq("is_active", true)
-    .order("name", { ascending: true })
-    .limit(10);
-  const { data: items } = aliasItemId
-    ? await query.eq("id", aliasItemId)
-    : await query.ilike("name", `%${name.trim()}%`);
-
-  const candidates: ItemCandidate[] = [];
-  for (const it of items ?? []) {
-    candidates.push({
-      itemId: it.id as string,
-      name: it.name as string,
-      trackingType: (it.tracking_type as "individual" | "quantity") ?? "individual",
-      units: await resolveUnits(supabase, it.id as string),
-    });
+  // 1. alias の item を id 固定取得。0 件（非アクティブ等）なら ILIKE にフォールバック（gen-1 同様）。
+  let items = aliasItemId ? await fetchItems(supabase, { id: aliasItemId }) : [];
+  if (items.length === 0) {
+    items = await fetchItems(supabase, { ilike: trimmed });
   }
-  return candidates;
+
+  // 2. 候補ごとの units を並列解決（N+1 の直列待ちを避ける）。
+  return Promise.all(
+    items.map(async (it) => ({
+      itemId: it.id,
+      name: it.name,
+      trackingType: (it.tracking_type as "individual" | "quantity") ?? "individual",
+      units: await resolveUnits(supabase, it.id),
+    })),
+  );
 }
 
 /**

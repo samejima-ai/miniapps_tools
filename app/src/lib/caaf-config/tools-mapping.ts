@@ -4,7 +4,7 @@
  * 確定済み CaaFRecord を append-only な item_movements 行へ変換する。
  * FW Don't をコードで担保し、tools-mapping.test.ts で固定する:
  *  - 罠A: 状態カラムを書かない。movement INSERT のみ（状態は View 導出）
- *  - D-1: append-only。常に INSERT、movement_type=action。UPDATE/DELETE しない
+ *  - D-1: append-only。常に INSERT（movement_type は action= checkout/return）。UPDATE/DELETE しない
  *  - D-7: holder_id（保持者）と moved_by（入力者）を別に保持
  *  - D-11: checkout で持出中（currentHolderId あり）の unit は二重持出として拒否
  *  - D-3: confidence は log 列にのみ載せ、状態/採否判定に使わない
@@ -93,7 +93,7 @@ export function buildMovementRows(input: ToolsMovementInput): BuildResult {
         itemId: input.itemId,
         unitId: u.unitId,
         quantity: null,
-        movementType: input.action, // D-1: 常に INSERT、type=action
+        movementType: input.action, // D-1: 常に INSERT（action= checkout/return のイベント）
         projectId: input.projectId,
         holderId,
         movedBy: input.movedBy, // D-7: 入力者は別
@@ -147,7 +147,10 @@ export function recordToMovementInput(
   ctx: { movedBy: string; itemName?: string; siteNote?: string | null },
 ): ToolsMovementInput {
   const action = fieldValue(record, TOOLS_FIELD.action) === "return" ? "return" : "checkout";
-  const itemId = String(fieldValue(record, TOOLS_FIELD.item) ?? "");
+  // 文字列の解決済み item_id のみ受け付ける。非 string は "" = 未解決として write 側で弾く
+  // （String() 強制で "[object Object]" 等が if (!itemId) をすり抜けるのを防ぐ）。
+  const itemRaw = fieldValue(record, TOOLS_FIELD.item);
+  const itemId = typeof itemRaw === "string" ? itemRaw : "";
   const rawUnits = fieldValue(record, TOOLS_FIELD.units);
   const units: ResolvedUnit[] = Array.isArray(rawUnits)
     ? (rawUnits as ResolvedUnit[]).filter((u) => u && typeof u.unitNumber === "number")
