@@ -18,11 +18,35 @@ export { TOOLS_FIELD, TOOLS_FIELDS } from "./tools-fields";
 export {
   buildMovementRows,
   recordToMovementInput,
+  resolveRequestedUnits,
   type ToolsAction,
   type ToolsMovementInput,
   type ResolvedUnit,
   type MovementRow,
+  type ItemCandidate,
+  type UnitResolution,
 } from "./tools-mapping";
 
 // 工具 CaaFApp 定義 + tracking_type 条件付き必須 overlay（M-D）
 export { toolsApp, toolsAppForTracking, type ToolsTracking } from "./tools-app";
+
+// 工具 host 会話エンジン（M-E.1、純関数。rally の answer/skip/choose は client 側で適用）
+export {
+  initialHostState,
+  recompute,
+  applyExtractedRecord,
+  applyItemCandidates,
+  chooseCandidate,
+  answerField,
+  skipField,
+  pendingField,
+  confirmForExecute,
+  hostSignal,
+  summarize,
+  intentPhase,
+  missingRequired,
+  type HostState,
+  type HostPhase,
+  type HostIssue,
+  type PendingRefs,
+} from "./host-turn";

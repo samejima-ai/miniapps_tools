@@ -5,6 +5,7 @@ import {
   type ToolsMovementInput,
   buildMovementRows,
   recordToMovementInput,
+  resolveRequestedUnits,
 } from "./tools-mapping";
 
 function input(over: Partial<ToolsMovementInput> = {}): ToolsMovementInput {
@@ -28,6 +29,31 @@ const unit = (over: Partial<ResolvedUnit> = {}): ResolvedUnit => ({
   unitId: "unit-1",
   currentHolderId: null,
   ...over,
+});
+
+describe("resolveRequestedUnits — 要求番号のマスタ突き合わせ（純）", () => {
+  const avail: ResolvedUnit[] = [
+    unit({ unitNumber: 1, unitId: "u1" }),
+    unit({ unitNumber: 2, unitId: "u2", currentHolderId: "h1" }), // 持出中
+    unit({ unitNumber: 3, unitId: "u3" }),
+  ];
+
+  it("存在する番号は resolved、無い番号は missing に分かれる", () => {
+    const r = resolveRequestedUnits([1, 3, 9], avail);
+    expect(r.resolved.map((u) => u.unitNumber)).toEqual([1, 3]);
+    expect(r.missing).toEqual([9]);
+    expect(r.alreadyOut).toEqual([]);
+  });
+
+  it("持出中（currentHolderId あり）は alreadyOut にも入る（resolved には残す）", () => {
+    const r = resolveRequestedUnits([2, 3], avail);
+    expect(r.resolved.map((u) => u.unitNumber)).toEqual([2, 3]);
+    expect(r.alreadyOut.map((u) => u.unitNumber)).toEqual([2]);
+  });
+
+  it("空要求は全て空", () => {
+    expect(resolveRequestedUnits([], avail)).toEqual({ resolved: [], missing: [], alreadyOut: [] });
+  });
 });
 
 describe("buildMovementRows — FW Don't 担保", () => {

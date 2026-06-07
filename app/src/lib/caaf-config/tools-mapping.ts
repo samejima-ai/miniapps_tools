@@ -26,6 +26,53 @@ export interface ResolvedUnit {
   currentHolderName?: string | null;
 }
 
+/**
+ * read("resolve-item") が返す工具候補（マスタ解決の結果）。
+ * 純データなので host（純関数）と adapter（server-only）の双方から参照できるよう
+ * ここ（純モジュール）に定義する。
+ */
+export interface ItemCandidate {
+  itemId: string;
+  name: string;
+  trackingType: "individual" | "quantity";
+  units: ResolvedUnit[];
+}
+
+/** ユーザー要求番号をマスタ個体に突き合わせた結果（純関数 resolveRequestedUnits の出力）。 */
+export interface UnitResolution {
+  /** マスタに存在した個体。 */
+  resolved: ResolvedUnit[];
+  /** マスタに存在しない要求番号（unit_missing）。 */
+  missing: number[];
+  /** resolved のうち現在持出中（checkout 時の D-11 リスク）。 */
+  alreadyOut: ResolvedUnit[];
+}
+
+/**
+ * 要求された個体番号（抽出値）を候補の available 個体に突き合わせる純関数。
+ * write 時の D-11 判定材料（alreadyOut）と、存在しない番号（missing）を切り分ける。
+ * ここでは採否を決めない。host/UI が提示し、最終的な write 採否は buildMovementRows（M-C）が担保する。
+ */
+export function resolveRequestedUnits(
+  requested: number[],
+  available: ResolvedUnit[],
+): UnitResolution {
+  const byNum = new Map(available.map((u) => [u.unitNumber, u]));
+  const resolved: ResolvedUnit[] = [];
+  const missing: number[] = [];
+  const alreadyOut: ResolvedUnit[] = [];
+  for (const n of requested) {
+    const u = byNum.get(n);
+    if (!u) {
+      missing.push(n);
+      continue;
+    }
+    resolved.push(u);
+    if (u.currentHolderId) alreadyOut.push(u);
+  }
+  return { resolved, missing, alreadyOut };
+}
+
 /** 解決済みの「書き込み準備が整った」工具入力。 */
 export interface ToolsMovementInput {
   action: ToolsAction;
