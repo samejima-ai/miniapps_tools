@@ -277,3 +277,48 @@ migration `0004_grant_anon_master_write.sql` で以下を anon に付与:
 - `src/lib/supabase/movements.ts`（to_location_id デフォルト埋め）
 - 一覧 UI（現在地表示の拡張）
 
+---
+
+## ADR-007: CaaF gen-2 化（汎用FW v1.0.0 / `@caaf/core` 別パッケージ抽出）
+
+- **日付**: 2026-06-07
+- **状態**: Accepted（L0 spec-architect 着手、人間が 4 論点を明示選択）
+- **決定者**: 人間（AskUserQuestion 4 問に回答）+ AI 設計
+
+### 背景
+
+第一世代 CaaF（`src/lib/caaf/` の「ストローク対話モデル」）は単一ドメイン・Router/Intent 層なし・Supabase 直結で、工具管理アプリに特化していた。利用者が汎用FW定義 **CaaF v1.0.0**（7層パイプライン / 複数App / Adapter 抽象 / Core純度）を提示し、本格的な汎用化に着手することになった。
+
+### 決定（L0 対話で確定した 4 論点）
+
+| 論点 | 決定 |
+|---|---|
+| 移行戦略 | 全面書き換え（gen-1 を gen-2 に置換。パリティ到達まで gen-1 を残す） |
+| 初回スコープ | フル v1.0.0（Intent + Router + Adapter + multi-App + Resolver ラリー） |
+| Core 配置 | 別ワークスペース `packages/caaf-core`（`@caaf/core`、pnpm workspace 化） |
+| 2つ目の App | 当面は工具のみ（Router/multi-App は構造として用意、点灯は資材統合 Phase 2 等） |
+
+### 根拠
+
+1. **Core純度の物理強制**: 別パッケージ + grep 検証（`scripts/purity-check.mjs`）で固有名詞/外部依存ゼロを担保。「利用者非依存FW」の identity を構造で確定
+2. **入力レイヤーのみの書き換え**: `item_movements` 台帳・migrations・View・RLS は不変。罠A/D-1〜D-12 は db Adapter 内で維持。書き換えは可逆（gen-1 は git 履歴 + M-F まで到達可能）
+3. **段階 land**: 「全面書き換え」を M-A〜M-F のレビュー可能マイルストンで届ける（M2 + independent-reviewer 整合）
+4. **将来の多ドメイン口**: 同一 Core が複数ドメイン（資材/日報/在庫…）の統一入力口になる構造を先に用意
+
+### L0 で意図的に保留した事項
+
+- root `pnpm-workspace.yaml` は **L0 で作成しない**。理由: `cd app && pnpm install`（Vercel 本番経路）が workspace ルートを検出し稼働中 M0 アプリの install/lockfile 挙動を変えうるが、L0 環境では Vercel ビルドを検証できない。適用と検証を L1 マイルストン M-A に倒す（`spec/caaf-migration.md` §5）。現時点で `app/` は無変更 = 本番無影響
+
+### 影響ファイル
+
+- `packages/caaf-core/`（新設・自己完結。types/adapter/intent/router/mapper/validate/resolver/signal/guards/execute + test + purity-check + SPEC/README）
+- `spec/caaf-migration.md`（新設・移行計画 + 工具 binding + ワークスペース化手順 + M-A〜M-F ロードマップ）
+- `spec/caaf-component.md`（gen-1 superseded マーク + ポインタ）
+- `app/REGIME.md`（current_focus を CaaF gen-2 化へ更新、LC 記録）
+
+### 再評価条件
+
+- 2 App 目（資材統合等）が具体化 → Router/multi-App を本格点灯。binding を追加
+- Platform 統合時 → tools db Adapter を platform スキーマ参照へ拡張（Core 不変）
+- M-F パリティ検証で gen-1 撤去できない不足が判明 → 当該機能を L0 に差し戻し
+
