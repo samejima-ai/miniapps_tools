@@ -25,7 +25,7 @@ import type { Signal } from "@caaf/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { captureAction, executeAction } from "./actions";
 
-type Bubble = { role: "user" | "done"; text: string };
+type Bubble = { role: "user" | "done" | "info"; text: string };
 
 /** 信号色 → DESIGN トークン。 */
 function signalToken(signal: Signal): { text: string; bg: string; border: string } {
@@ -52,6 +52,8 @@ export default function Input2Page() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 同期ロック: setBusy 反映前の連打でも server 操作（LLM/append-only INSERT）を多重実行させない。
+  const lockRef = useRef(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -62,12 +64,13 @@ export default function Input2Page() {
     );
   }, []);
 
-  // 主入力バーは「新規発話待ち」のときだけ有効（rally/候補/ready 中は inline 操作）。
-  const barEnabled = !active || active.phase === "not_found";
+  // 主入力バーは「新規発話待ち」のときだけ有効。not_found / out_of_scope は言い直し可能にする。
+  const barEnabled = !active || active.phase === "not_found" || active.phase === "out_of_scope";
 
   const send = useCallback(async () => {
     const text = inputText.trim();
-    if (!text || busy || !barEnabled) return;
+    if (!text || lockRef.current || !barEnabled) return;
+    lockRef.current = true;
     setInputText("");
     setError(null);
     setHistory((h) => [...h, { role: "user", text }]);
@@ -75,17 +78,25 @@ export default function Input2Page() {
     scrollToEnd();
     try {
       const next = await captureAction(movedBy, text, active);
-      setActive(next);
+      // intent=cancel は server が初期状態（phase=idle）を返す → 会話リセット扱い。
+      if (next.phase === "idle") {
+        setActive(null);
+        setHistory((h) => [...h, { role: "info", text: "入力をリセットしました" }]);
+      } else {
+        setActive(next);
+      }
     } catch {
       setError("解析に失敗しました。もう一度お試しください");
     } finally {
       setBusy(false);
+      lockRef.current = false;
       scrollToEnd();
     }
-  }, [inputText, busy, barEnabled, movedBy, active, scrollToEnd]);
+  }, [inputText, barEnabled, movedBy, active, scrollToEnd]);
 
   const onExecute = useCallback(async () => {
-    if (!active || busy) return;
+    if (!active || lockRef.current) return;
+    lockRef.current = true;
     setBusy(true);
     setError(null);
     const summary = summarize(active);
@@ -102,9 +113,10 @@ export default function Input2Page() {
       setError("登録に失敗しました。通信状態をご確認ください");
     } finally {
       setBusy(false);
+      lockRef.current = false;
       scrollToEnd();
     }
-  }, [active, busy, movedBy, scrollToEnd]);
+  }, [active, movedBy, scrollToEnd]);
 
   const field = active ? pendingField(active) : null;
 
@@ -132,10 +144,12 @@ export default function Input2Page() {
                   <div className="bg-primary text-surface rounded-2xl rounded-br-sm px-md py-sm max-w-[80%]">
                     <div className="text-body-sm whitespace-pre-wrap">{b.text}</div>
                   </div>
-                ) : (
+                ) : b.role === "done" ? (
                   <div className="bg-success/10 text-success rounded-xl px-md py-sm max-w-[90%]">
                     <div className="text-body-sm whitespace-pre-wrap">✓ {b.text}</div>
                   </div>
+                ) : (
+                  <div className="text-label-xs text-text-secondary px-sm py-xs">{b.text}</div>
                 )}
               </div>
             ))}
@@ -154,6 +168,12 @@ export default function Input2Page() {
                   {!busy && active.phase === "not_found" && (
                     <div className="border border-error/30 bg-error/5 rounded-lg px-md py-sm text-body-sm text-error">
                       {active.issues[0]?.message ?? "見つかりませんでした。言い直してください"}
+                    </div>
+                  )}
+
+                  {!busy && active.phase === "out_of_scope" && (
+                    <div className="border border-divider bg-background-subtle rounded-lg px-md py-sm text-body-sm text-text-secondary">
+                      工具の持出・返却を入力してください（例: バッテリー 2,3番 池下現場）
                     </div>
                   )}
 
@@ -214,12 +234,21 @@ export default function Input2Page() {
                             disabled={!rallyInput.trim()}
                             onClick={() => {
                               if (field.name === "units") {
-                                setActive(applyUnitNumbers(active, parseNumbers(rallyInput)));
+                                const nums = parseNumbers(rallyInput);
+                                if (nums.length === 0) {
+                                  setError("番号を数字で入力してください（例: 2,3）");
+                                  return; // 無効入力では確定せず入力も消さない
+                                }
+                                setError(null);
+                                setActive(applyUnitNumbers(active, nums));
                               } else {
                                 const n = Number(rallyInput.replace(/[^\d.]/g, ""));
-                                if (Number.isFinite(n) && n > 0) {
-                                  setActive(answerField(active, field.name, n));
+                                if (!Number.isFinite(n) || n <= 0) {
+                                  setError("数量を正しい数値で入力してください");
+                                  return;
                                 }
+                                setError(null);
+                                setActive(answerField(active, field.name, n));
                               }
                               setRallyInput("");
                             }}

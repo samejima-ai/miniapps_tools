@@ -61,7 +61,11 @@ export function resolveRequestedUnits(
   const resolved: ResolvedUnit[] = [];
   const missing: number[] = [];
   const alreadyOut: ResolvedUnit[] = [];
+  // 同一番号の重複入力は 1 度だけ解決する（重複 INSERT 防止）。
+  const seen = new Set<number>();
   for (const n of requested) {
+    if (seen.has(n)) continue;
+    seen.add(n);
     const u = byNum.get(n);
     if (!u) {
       missing.push(n);
