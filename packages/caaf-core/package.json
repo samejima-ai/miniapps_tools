@@ -1,0 +1,25 @@
+{
+  "name": "@caaf/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CaaF (Chat as a Form) — universal conversational input layer. Domain-agnostic Core (no proper nouns, grep-verifiable purity).",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "types": "./src/index.ts",
+  "files": ["src"],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "purity": "node ./scripts/purity-check.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

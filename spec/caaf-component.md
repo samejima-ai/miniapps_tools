@@ -1,9 +1,17 @@
-# CaaF Component — 設計ドキュメント
+# CaaF Component — 設計ドキュメント（gen-1 / 第一世代）
+
+> **ステータス: gen-1（superseded-in-progress）。** 本書は第一世代「ストローク対話モデル」
+> （`app/src/lib/caaf/`、単一ドメイン・Router/Intent 層なし）の設計記録。
+> 2026-06-07 の L0 対話で **gen-2 汎用FW v1.0.0** への全面書き換えが確定した。
+> - gen-2 Core 仕様（利用者非依存）: `packages/caaf-core/SPEC.md`
+> - gen-1 → gen-2 移行・工具 binding: `spec/caaf-migration.md`
+> gen-1 は移行マイルストン M-F（パリティ検証）まで到達可能なまま残す。本書は履歴として保持。
 
 ## 概要
 
 CaaF (Chat as a Form) をドメイン非依存な汎用コンポーネントとして `src/lib/caaf/` に抽出。
 工具管理ミニアプリを最初のクライアントとしてリファクタ。
+（gen-2 ではこの「ドメイン非依存」意図を `@caaf/core` 別パッケージ + Adapter 抽象 + 多App Router まで深化させる。）
 
 ## モジュール構成
 
