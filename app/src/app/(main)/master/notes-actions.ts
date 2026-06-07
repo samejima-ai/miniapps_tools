@@ -8,8 +8,8 @@
  * lib/llm/notes-generator.ts を使う。
  */
 
+import { isGeminiConfigured } from "@/lib/llm/gemini";
 import { generateItemNotes } from "@/lib/llm/notes-generator";
-import { isGeminiConfigured } from "@/lib/caaf/llm";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export type GenerateNotesResult =

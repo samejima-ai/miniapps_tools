@@ -20,7 +20,8 @@ import type {
 } from "./domain";
 
 // ============================================================================
-// LLM Router (src/lib/llm/router.ts)
+// LLM 抽出（M-F 以降は gen-2 host: src/lib/caaf-config/ + @caaf/core）
+// 旧 stroke router（src/lib/llm/router.ts）は撤去済み。以下は歴史的シグネチャ。
 // ============================================================================
 
 export type LlmProvider = "gemini-flash-lite" | "claude-api";

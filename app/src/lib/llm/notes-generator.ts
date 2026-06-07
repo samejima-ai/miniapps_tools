@@ -13,7 +13,7 @@
 
 import "server-only";
 
-import { callGeminiJSON } from "@/lib/caaf/llm";
+import { callGeminiJSON } from "@/lib/llm/gemini";
 
 export type ItemNotesInput = {
   name: string;
