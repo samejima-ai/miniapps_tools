@@ -163,7 +163,14 @@ export function applyExtractedRecord(
     candidates: [],
     issues: [],
     phase: "idle",
+    // 新 record に基づき signal を再計算（直前ターンの signal を残さない）。
+    signal: hostSignal(toolsApp, record, []),
   };
+}
+
+/** itemName の表示フォールバック（空文字/空白も「工具」に寄せる）。 */
+function itemLabel(name: string | null): string {
+  return name && name.trim() !== "" ? name : "工具";
 }
 
 /**
@@ -182,7 +189,7 @@ export function applyItemCandidates(prev: HostState, candidates: ItemCandidate[]
       issues: [
         {
           kind: "not_found",
-          message: `「${prev.itemName ?? "工具"}」がマスタに見つかりません。言い直してください`,
+          message: `「${itemLabel(prev.itemName)}」がマスタに見つかりません。言い直してください`,
         },
       ],
     };
@@ -190,7 +197,14 @@ export function applyItemCandidates(prev: HostState, candidates: ItemCandidate[]
   if (candidates.length === 1) {
     return resolveToCandidate(prev, candidates[0] as ItemCandidate, "context");
   }
-  return { ...prev, phase: "candidates", candidates, issues: [] };
+  // 複数候補。issue は無いが signal は record に追従させる（直前 signal を残さない）。
+  return {
+    ...prev,
+    phase: "candidates",
+    candidates,
+    issues: [],
+    signal: hostSignal(prev.app, prev.record, []),
+  };
 }
 
 /** candidates フェーズでユーザーが 1 つ選んだ（純関数。再 fetch 不要＝候補が units を保持）。 */

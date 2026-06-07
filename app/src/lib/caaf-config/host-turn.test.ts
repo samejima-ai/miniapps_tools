@@ -263,3 +263,34 @@ describe("recompute は applyDefaults で action=checkout を充当", () => {
     expect(s.record.fields[TOOLS_FIELD.action]?.value).toBe("checkout");
   });
 });
+
+describe("signal の状態追従（Copilot #21: 直前 signal を残さない）", () => {
+  it("applyExtractedRecord は新 record に基づき signal を再計算（古い green を残さない）", () => {
+    const stale: HostState = { ...initialHostState(), signal: "green" };
+    // 工具名のみ（action 未充足）→ 不完全 → red 寄り。少なくとも green のまま据え置きにしない。
+    const s = applyExtractedRecord(stale, { [TOOLS_FIELD.item]: ai("バッテリー") });
+    expect(s.phase).toBe("idle");
+    expect(s.signal).toBe(hostSignal(s.app, s.record, []));
+  });
+
+  it("candidates 分岐も signal を record に追従させる", () => {
+    const captured = applyExtractedRecord(
+      { ...initialHostState(), signal: "green" },
+      { [TOOLS_FIELD.item]: ai("バ") },
+    );
+    const s = applyItemCandidates(captured, [
+      individualCandidate({ itemId: "a", name: "バッテリーA" }),
+      individualCandidate({ itemId: "b", name: "バッテリーB" }),
+    ]);
+    expect(s.phase).toBe("candidates");
+    expect(s.signal).toBe(hostSignal(s.app, s.record, []));
+  });
+
+  it("not_found: itemName が空文字でも「工具」にフォールバック（「」にしない）", () => {
+    const captured = applyExtractedRecord(initialHostState(), { [TOOLS_FIELD.item]: ai("") });
+    const s = applyItemCandidates(captured, []);
+    expect(s.phase).toBe("not_found");
+    expect(s.issues[0]?.message).toContain("工具");
+    expect(s.issues[0]?.message).not.toContain("「」");
+  });
+});
