@@ -20,7 +20,7 @@ test.describe("E2E-010: Input empty state", () => {
     await expect(page).toHaveURL(/.*\/input/);
 
     // エンプティ状態のプレースホルダ
-    await expect(page.getByText("LINE と同じノリで入力してください")).toBeVisible();
+    await expect(page.getByText("工具名・番号・現場を入力してください")).toBeVisible();
 
     // テキストエリアに入力できる
     const textarea = page.getByPlaceholder("工具名・番号・現場を入力...");

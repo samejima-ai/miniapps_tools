@@ -4,8 +4,8 @@
  * 設計原則 4（サーバーサイド LLM）: API キーはサーバー専用 env（GEMINI_API_KEY）。
  * `import "server-only"` により、クライアントコンポーネントが import するとビルドが失敗する。
  *
- * 本ファイルは Config 側（gen-2）。gen-1 の `@/lib/caaf/llm` には依存しないため、
- * M-F で gen-1（src/lib/caaf/）を撤去しても影響を受けない。
+ * 本ファイルは Config 側の独立した Gemini クライアント（master notes 用の
+ * `@/lib/llm/gemini` とは別系統）。M-F で旧 stroke 実装は撤去済み。
  *
  * 2 回 LLM 呼び出しの役割分離（FW spec §3）:
  *   - Intent(L0.3): 軽量・低 temperature（毎ターン）

@@ -1,527 +1,318 @@
 "use client";
 
 /**
- * Input Page — Chat UI v2 ストローク対話モデル (CaaF コンポーネント化)
+ * Input Page — CaaF host Chat UI（F2 入力タブ）
  *
- * 状態管理は useCaaF フック（lib/caaf）に委譲。
- * 本コンポーネントはドメイン固有の設定とレンダリングのみ担当。
+ * CaaF v1.0.0 パイプライン（@caaf/core + @/lib/caaf-config）を結線した Resolver ラリー UI。
+ * M-F で gen-1（stroke 対話モデル）を撤去し、本実装が唯一の入力経路となった。
  *
- * Phase 0 = 全件確認。自動 INSERT しない (D-4)。
- * LLM は抽出器、欠損補完しない (D-5)。
+ * - capture / execute のみ Server Action（LLM + DB）。rally の選択/回答は純関数で client 側（server 往復ゼロ）。
+ * - DESIGN.md トークンでスタイリング。1 応答 1 質問（FW spec §7.2）。
+ * - 確定はユーザー（Don't #3）。自動 INSERT しない（D-4）。
  */
 
-import { StrokeItemCard } from "@/components/stroke-item-card";
-import { useCaaF } from "@/lib/caaf";
-import type { CaafConfig } from "@/lib/caaf";
-import { useUser } from "@/lib/user-context";
-import type { CaaFExtractionResult } from "@/types";
-import { useRouter } from "next/navigation";
-import { useCallback } from "react";
 import {
-  type ResolvedItem,
-  type ResolvedProject,
-  clarifyAction,
-  confirmCheckoutAction,
-  extractAction,
-} from "./actions";
+  type HostState,
+  type ItemCandidate,
+  type SiteCandidate,
+  TOOLS_FIELD,
+  answerField,
+  applyUnitNumbers,
+  chooseCandidate,
+  chooseSite,
+  pendingField,
+  summarize,
+} from "@/lib/caaf-config";
+import { useUser } from "@/lib/user-context";
+import type { Signal } from "@caaf/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { captureAction, executeAction } from "./actions";
 
-// ── Domain Config (module-level, stable reference) ──
+type Bubble = { role: "user" | "done" | "info"; text: string };
 
-const TOOL_CAAF_CONFIG: CaafConfig<CaaFExtractionResult, ResolvedItem, ResolvedProject> = {
-  extractAction,
-  clarifyAction,
-  confirmAction: async (extraction, confirmedItems, context) => {
-    const resolvedToSave = confirmedItems.map((i) => ({
-      ...i.resolved,
-      extractedName: i.originalExtractedName ?? i.resolved.extractedName,
-    }));
-    return confirmCheckoutAction(
-      extraction,
-      resolvedToSave,
-      context.userId,
-      null,
-      context.project?.projectId ?? null,
-      context.project?.projectName ?? null,
-    );
-  },
-  getExtractedName: (r) => r.extractedName,
-  makeItemKey: (r) => {
-    if (r.unitResolutions.length > 0) {
-      const units = r.unitResolutions
-        .map((u) => u.unitNumber)
-        .sort((a, b) => a - b)
-        .join(",");
-      return `${r.matchedItemId ?? r.extractedName}:${units}`;
-    }
-    return `${r.matchedItemId ?? r.extractedName}:qty`;
-  },
-  isConfirmable: (r) => r.status === "matched",
-};
+/** 信号色 → DESIGN トークン。 */
+function signalToken(signal: Signal): { text: string; bg: string; border: string } {
+  if (signal === "green")
+    return { text: "text-success", bg: "bg-success/5", border: "border-success/30" };
+  if (signal === "yellow")
+    return { text: "text-warning", bg: "bg-warning/5", border: "border-warning/30" };
+  return { text: "text-error", bg: "bg-error/5", border: "border-error/30" };
+}
+
+/** 自由文から個体番号を抽出（カンマ/空白/全角区切り）。 */
+function parseNumbers(text: string): number[] {
+  return (text.match(/\d+/g) ?? []).map(Number).filter((n) => Number.isFinite(n));
+}
 
 export default function InputPage() {
   const { currentUser } = useUser();
-  const router = useRouter();
+  const movedBy = currentUser?.id ?? "";
 
-  const {
-    strokes,
-    inputText,
-    scrollRef,
-    inputRef,
-    handleSend,
-    handleConfirmItem,
-    handleSkipItem,
-    handleUndoSkip,
-    handleConfirmAll,
-    handleEdit,
-    handleRetry,
-    handleKeyDown,
-    handleTextChange,
-    handleCompositionStart,
-    handleCompositionEnd,
-    isReviewing,
-    isBusy,
-    updateStrokeItems,
-    updateStrokeProject,
-  } = useCaaF(TOOL_CAAF_CONFIG, currentUser?.id ?? null);
+  const [history, setHistory] = useState<Bubble[]>([]);
+  const [active, setActive] = useState<HostState | null>(null);
+  const [inputText, setInputText] = useState("");
+  const [rallyInput, setRallyInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // 同期ロック: setBusy 反映前の連打でも server 操作（LLM/append-only INSERT）を多重実行させない。
+  const lockRef = useRef(false);
 
-  // ── Domain-specific: LLM 候補選択（not_found → 候補から確定） ──
-  const handleSelectCandidate = useCallback(
-    (strokeId: string, itemIndex: number, candidate: ResolvedItem["candidates"][number]) => {
-      updateStrokeItems(strokeId, (items) =>
-        items.map((item, i) => {
-          if (i !== itemIndex) return item;
-          const r = item.resolved;
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, []);
+  const scrollToEnd = useCallback(() => {
+    requestAnimationFrame(() =>
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }),
+    );
+  }, []);
 
-          // quantity 管理: 番号情報をクリア、即 matched
-          if (candidate.trackingType === "quantity") {
-            return {
-              ...item,
-              resolved: {
-                ...r,
-                matchedItemId: candidate.itemId,
-                matchedName: candidate.name,
-                trackingType: "quantity" as const,
-                unitResolutions: [],
-                availableUnits: [],
-                availableUnitDetails: [],
-                status: "matched" as ResolvedItem["status"],
-                candidates: [],
-              },
-              status: "pending" as const,
-            };
-          }
+  // 主入力バーは「新規発話待ち」のときだけ有効。not_found / out_of_scope は言い直し可能にする。
+  const barEnabled = !active || active.phase === "not_found" || active.phase === "out_of_scope";
 
-          // individual 管理: 既存指定番号があれば候補側 availableUnits で再評価
-          const hasUnits = r.unitResolutions.length > 0;
-          const isIndividualNoUnit = !hasUnits;
+  const send = useCallback(async () => {
+    const text = inputText.trim();
+    if (!text || lockRef.current || !barEnabled) return;
+    lockRef.current = true;
+    setInputText("");
+    setError(null);
+    setHistory((h) => [...h, { role: "user", text }]);
+    setBusy(true);
+    scrollToEnd();
+    try {
+      const next = await captureAction(movedBy, text, active);
+      // intent=cancel は server が初期状態（phase=idle）を返す → 会話リセット扱い。
+      if (next.phase === "idle") {
+        setActive(null);
+        setHistory((h) => [...h, { role: "info", text: "入力をリセットしました" }]);
+      } else {
+        setActive(next);
+      }
+    } catch {
+      setError("解析に失敗しました。もう一度お試しください");
+    } finally {
+      setBusy(false);
+      lockRef.current = false;
+      scrollToEnd();
+    }
+  }, [inputText, barEnabled, movedBy, active, scrollToEnd]);
 
-          let newUnitResolutions = r.unitResolutions;
-          if (hasUnits) {
-            const detailByNum = new Map(
-              candidate.availableUnitDetails.map((d) => [d.unitNumber, d]),
-            );
-            newUnitResolutions = r.unitResolutions.map((u) => {
-              const d = detailByNum.get(u.unitNumber);
-              return {
-                unitNumber: u.unitNumber,
-                unitId: d?.unitId ?? null,
-                exists: !!d,
-                currentHolderId: d?.currentHolderId ?? null,
-                currentHolderName: d?.currentHolderName ?? null,
-              };
-            });
-          }
-          const hasUnitMissing = newUnitResolutions.some((u) => !u.exists);
-          const hasUnitAlreadyOut = newUnitResolutions.some(
-            (u) => u.exists && u.currentHolderId,
-          );
+  const onExecute = useCallback(async () => {
+    if (!active || lockRef.current) return;
+    lockRef.current = true;
+    setBusy(true);
+    setError(null);
+    const summary = summarize(active);
+    try {
+      const result = await executeAction(movedBy, active);
+      if (result.success) {
+        const note = result.error ? `（一部エラー: ${result.error}）` : "";
+        setHistory((h) => [...h, { role: "done", text: `登録しました：${summary}${note}` }]);
+        setActive(null);
+      } else {
+        setError(result.error ?? "登録に失敗しました");
+      }
+    } catch {
+      setError("登録に失敗しました。通信状態をご確認ください");
+    } finally {
+      setBusy(false);
+      lockRef.current = false;
+      scrollToEnd();
+    }
+  }, [active, movedBy, scrollToEnd]);
 
-          return {
-            ...item,
-            resolved: {
-              ...r,
-              matchedItemId: candidate.itemId,
-              matchedName: candidate.name,
-              trackingType: "individual" as const,
-              unitResolutions: newUnitResolutions,
-              availableUnits: candidate.availableUnits,
-              availableUnitDetails: candidate.availableUnitDetails,
-              status: (hasUnitMissing
-                ? "unit_missing"
-                : hasUnitAlreadyOut
-                  ? "unit_already_out"
-                  : isIndividualNoUnit
-                    ? "no_unit_specified"
-                    : "matched") as ResolvedItem["status"],
-              candidates: [],
-            },
-            status: "pending" as const,
-          };
-        }),
-      );
-    },
-    [updateStrokeItems],
-  );
-
-  // ── Domain-specific: 案件候補選択（複数マッチ時） ──
-  const handleSelectProject = useCallback(
-    (strokeId: string, projectId: string, projectName: string) => {
-      updateStrokeProject(strokeId, {
-        projectId,
-        projectName,
-        status: "matched" as const,
-        candidates: [],
-      });
-    },
-    [updateStrokeProject],
-  );
-
-  // ── Domain-specific: 番号選択（no_unit_specified / unit_missing 時） ──
-  const handleSelectUnit = useCallback(
-    (strokeId: string, itemIndex: number, unitNumber: number) => {
-      updateStrokeItems(strokeId, (items) =>
-        items.map((item, i) => {
-          if (i !== itemIndex) return item;
-          const r = item.resolved;
-
-          const detail = r.availableUnitDetails.find((d) => d.unitNumber === unitNumber);
-          if (!detail) return item;
-
-          let newUnitResolutions: typeof r.unitResolutions;
-          const resolutionFromDetail = {
-            unitNumber,
-            unitId: detail.unitId,
-            exists: true,
-            currentHolderId: detail.currentHolderId,
-            currentHolderName: detail.currentHolderName,
-          };
-
-          if (r.status === "no_unit_specified") {
-            newUnitResolutions = [resolutionFromDetail];
-          } else if (r.status === "unit_missing") {
-            let replaced = false;
-            newUnitResolutions = r.unitResolutions.map((u) => {
-              if (!u.exists && !replaced) {
-                replaced = true;
-                return resolutionFromDetail;
-              }
-              return u;
-            });
-          } else if (r.status === "unit_already_out") {
-            // 持出中の番号を、在庫の別番号で置き換える
-            let replaced = false;
-            newUnitResolutions = r.unitResolutions.map((u) => {
-              if (u.exists && u.currentHolderId && !replaced) {
-                replaced = true;
-                return resolutionFromDetail;
-              }
-              return u;
-            });
-          } else {
-            return item;
-          }
-
-          const allExist = newUnitResolutions.every((u) => u.exists);
-          const stillAlreadyOut = newUnitResolutions.some(
-            (u) => u.exists && u.currentHolderId,
-          );
-          const newStatus: ResolvedItem["status"] = !allExist
-            ? "unit_missing"
-            : stillAlreadyOut
-              ? "unit_already_out"
-              : "matched";
-
-          return {
-            ...item,
-            resolved: {
-              ...r,
-              unitResolutions: newUnitResolutions,
-              status: newStatus,
-            },
-            status: "pending" as const,
-          };
-        }),
-      );
-    },
-    [updateStrokeItems],
-  );
+  const field = active ? pendingField(active) : null;
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* チャットエリア */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-md py-md">
-        {strokes.length === 0 ? (
+        {history.length === 0 && !active ? (
           <div className="flex flex-col items-center justify-center h-full text-text-secondary gap-sm">
-            <div className="text-body-sm text-center">LINE と同じノリで入力してください</div>
+            <div className="text-body-sm text-center">工具名・番号・現場を入力してください</div>
             <div className="text-label-xs text-center opacity-60">
-              例: マキタバッテリー 7,8番 池下現場
+              例: バッテリー 2,3番 池下現場
             </div>
           </div>
         ) : (
           <div className="flex flex-col gap-lg">
-            {strokes.map((stroke) => (
-              <div key={stroke.id} className="flex flex-col gap-sm">
-                {/* ユーザーメッセージ（右寄せ） */}
-                <div className="flex justify-end">
+            {history.map((b, i) => (
+              <div
+                key={`${b.role}-${i}`}
+                className={b.role === "user" ? "flex justify-end" : "flex justify-start"}
+              >
+                {b.role === "user" ? (
                   <div className="bg-primary text-surface rounded-2xl rounded-br-sm px-md py-sm max-w-[80%]">
-                    <div className="text-body-sm whitespace-pre-wrap">{stroke.userText}</div>
+                    <div className="text-body-sm whitespace-pre-wrap">{b.text}</div>
                   </div>
-                </div>
-
-                {/* 対話修正の履歴 */}
-                {stroke.clarifications.map((c, ci) => (
-                  <div key={`clarify-${ci}`} className="flex flex-col gap-sm">
-                    {/* 修正指示（右寄せ） */}
-                    <div className="flex justify-end">
-                      <div className="bg-primary text-surface rounded-2xl rounded-br-sm px-md py-sm max-w-[80%]">
-                        <div className="text-body-sm whitespace-pre-wrap">{c.userText}</div>
-                      </div>
-                    </div>
-                    {/* 修正結果（左寄せ） */}
-                    {c.systemMessage && (
-                      <div className="flex justify-start">
-                        <div className="text-body-sm text-text-secondary py-xs px-sm">
-                          {c.systemMessage}
-                        </div>
-                      </div>
-                    )}
+                ) : b.role === "done" ? (
+                  <div className="bg-success/10 text-success rounded-xl px-md py-sm max-w-[90%]">
+                    <div className="text-body-sm whitespace-pre-wrap">✓ {b.text}</div>
                   </div>
-                ))}
-
-                {/* システム応答（左寄せ） */}
-                <div className="flex justify-start">
-                  <div className="max-w-[95%] w-full">
-                    {/* 解析中 */}
-                    {stroke.phase === "extracting" && (
-                      <div className="flex items-center gap-sm py-sm text-primary">
-                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                        <span className="text-body-sm">解析中...</span>
-                      </div>
-                    )}
-
-                    {/* 修正反映中 */}
-                    {stroke.isClarifying && (
-                      <div className="flex items-center gap-sm py-sm text-primary">
-                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                        <span className="text-body-sm">修正を反映中...</span>
-                      </div>
-                    )}
-
-                    {/* レビュー: 個別アイテム確認 */}
-                    {stroke.phase === "reviewing" && stroke.extraction && !stroke.isClarifying && (
-                      <div className="flex flex-col gap-sm">
-                        {/* ヘッダー */}
-                        <div className="flex items-center gap-sm text-body-sm flex-wrap">
-                          {stroke.extraction.site && (
-                            <span className="text-ink font-bold">{stroke.extraction.site}</span>
-                          )}
-                          {/* 案件マッチング結果 */}
-                          {stroke.resolvedProject?.status === "matched" && (
-                            <span className="text-label-xs bg-success/10 text-success font-bold px-xs py-0.5 rounded-sm">
-                              ✓ {stroke.resolvedProject.projectName}
-                            </span>
-                          )}
-                          {stroke.resolvedProject?.status === "not_found" &&
-                            stroke.extraction.site && (
-                              <span className="text-label-xs bg-warning/10 text-warning font-bold px-xs py-0.5 rounded-sm">
-                                案件未一致
-                              </span>
-                            )}
-                          <span className="text-text-secondary">— {stroke.items.length}件</span>
-                        </div>
-
-                        {/* 案件候補ピッカー（複数マッチ時） */}
-                        {stroke.resolvedProject?.status === "multiple" &&
-                          stroke.resolvedProject.candidates.length > 0 && (
-                            <div className="border border-warning/30 bg-warning/5 rounded-md p-sm flex flex-col gap-xs">
-                              <div className="text-label-xs text-warning font-bold">
-                                案件候補が複数あります — 選択してください
-                              </div>
-                              <div className="flex flex-col gap-xs">
-                                {stroke.resolvedProject.candidates.map((c) => {
-                                  const isSelected =
-                                    stroke.resolvedProject?.projectId === c.projectId;
-                                  return (
-                                    <button
-                                      key={c.projectId}
-                                      type="button"
-                                      onClick={() =>
-                                        handleSelectProject(stroke.id, c.projectId, c.name)
-                                      }
-                                      className={`text-left text-body-sm rounded-md px-md py-sm min-h-[40px] border transition-colors ${
-                                        isSelected
-                                          ? "bg-primary text-surface border-primary font-bold"
-                                          : "bg-surface text-ink border-divider"
-                                      }`}
-                                    >
-                                      {isSelected ? "✓ " : ""}
-                                      {c.name}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-
-                        {/* 返却の場合: 一覧タブへ誘導 */}
-                        {stroke.extraction.action === "return" ? (
-                          <div className="border border-divider rounded-lg p-md flex flex-col gap-sm">
-                            <div className="text-body-sm text-text-secondary">
-                              返却は一覧タブから操作できます
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => router.push("/list")}
-                              className="bg-success text-surface font-bold rounded-md py-sm min-h-[44px]"
-                            >
-                              一覧タブへ
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            {/* アイテムリスト */}
-                            {stroke.items.map((item, i) => (
-                              <StrokeItemCard
-                                key={`${item.resolved.extractedName}-${i}`}
-                                item={item}
-                                onConfirm={() => handleConfirmItem(stroke.id, i)}
-                                onSkip={() => handleSkipItem(stroke.id, i)}
-                                onUndoSkip={() => handleUndoSkip(stroke.id, i)}
-                                onSelectUnit={(num) => handleSelectUnit(stroke.id, i, num)}
-                                onSelectCandidate={(c) => handleSelectCandidate(stroke.id, i, c)}
-                              />
-                            ))}
-
-                            {/* 全件確定ボタン */}
-                            {stroke.items.some(
-                              (i) => i.status === "pending" && i.resolved.status === "matched",
-                            ) && (
-                              <button
-                                type="button"
-                                onClick={() => handleConfirmAll(stroke.id)}
-                                className="bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] shadow-primary-cta transition-all"
-                              >
-                                全件確定
-                              </button>
-                            )}
-
-                            {/* 確定可能なアイテムがない場合 */}
-                            {stroke.items.length > 0 &&
-                              stroke.items.every(
-                                (i) => i.status === "pending" && i.resolved.status !== "matched",
-                              ) && (
-                                <div className="text-label-xs text-text-secondary text-center">
-                                  確定可能なアイテムがありません — スキップしてください
-                                </div>
-                              )}
-
-                            {/* アイテムが0件 */}
-                            {stroke.items.length === 0 && (
-                              <div className="text-body-sm text-text-secondary">
-                                工具を特定できませんでした
-                              </div>
-                            )}
-
-                            {/* 曖昧点 */}
-                            {stroke.extraction.ambiguities.length > 0 && (
-                              <div className="bg-surface border border-divider rounded-md p-sm">
-                                <div className="text-label-xs text-warning font-bold mb-xs">
-                                  確認が必要:
-                                </div>
-                                <ul className="text-body-sm text-text-secondary space-y-xs">
-                                  {stroke.extraction.ambiguities.map((a) => (
-                                    <li key={a}>・{a}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-
-                            {/* 入力し直す */}
-                            <button
-                              type="button"
-                              onClick={() => handleEdit(stroke.id)}
-                              className="text-label-xs text-text-secondary self-start"
-                            >
-                              入力し直す
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    )}
-
-                    {/* 登録中 */}
-                    {stroke.phase === "saving" && (
-                      <div className="flex items-center gap-sm py-sm text-primary">
-                        <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                        <span className="text-body-sm">登録中...</span>
-                      </div>
-                    )}
-
-                    {/* 完了 */}
-                    {stroke.phase === "done" && stroke.result && (
-                      <div
-                        className={`rounded-xl px-md py-sm flex flex-col gap-xs ${
-                          stroke.result.insertedCount === 0 && stroke.result.skippedCount === 0
-                            ? "bg-background-subtle border border-divider"
-                            : "bg-success/10 border border-success/30"
-                        }`}
-                      >
-                        <div className="flex items-center gap-sm">
-                          {stroke.result.insertedCount === 0 && stroke.result.skippedCount === 0 ? (
-                            <span className="text-body-sm text-text-secondary">
-                              キャンセルしました
-                            </span>
-                          ) : (
-                            <>
-                              <span>✅</span>
-                              <span className="text-body-sm text-success font-bold">
-                                {stroke.result.insertedCount}件 登録完了
-                                {stroke.result.skippedCount > 0 && (
-                                  <span className="text-text-secondary font-normal">
-                                    {" "}
-                                    / {stroke.result.skippedCount}件 スキップ
-                                  </span>
-                                )}
-                              </span>
-                            </>
-                          )}
-                        </div>
-                        {stroke.result.errors.length > 0 && (
-                          <div className="text-label-xs text-error whitespace-pre-wrap">
-                            {stroke.result.errors.join("\n")}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* エラー */}
-                    {stroke.phase === "error" && stroke.error && (
-                      <div className="bg-error/10 border border-error/30 rounded-xl px-md py-sm flex flex-col gap-xs">
-                        <div className="text-body-sm text-error whitespace-pre-wrap">
-                          {stroke.error}
-                        </div>
-                        <div className="flex gap-sm">
-                          <button
-                            type="button"
-                            onClick={() => handleRetry(stroke.id)}
-                            className="text-label-xs text-primary font-bold"
-                          >
-                            再試行
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleEdit(stroke.id)}
-                            className="text-label-xs text-text-secondary"
-                          >
-                            修正
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
+                ) : (
+                  <div className="text-label-xs text-text-secondary px-sm py-xs">{b.text}</div>
+                )}
               </div>
             ))}
+
+            {/* アクティブな会話状態 */}
+            {active && (
+              <div className="flex justify-start">
+                <div className="max-w-[95%] w-full flex flex-col gap-sm">
+                  {busy && (
+                    <div className="flex items-center gap-sm py-sm text-primary">
+                      <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                      <span className="text-body-sm">処理中...</span>
+                    </div>
+                  )}
+
+                  {!busy && active.phase === "not_found" && (
+                    <div className="border border-error/30 bg-error/5 rounded-lg px-md py-sm text-body-sm text-error">
+                      {active.issues[0]?.message ?? "見つかりませんでした。言い直してください"}
+                    </div>
+                  )}
+
+                  {!busy && active.phase === "out_of_scope" && (
+                    <div className="border border-divider bg-background-subtle rounded-lg px-md py-sm text-body-sm text-text-secondary">
+                      工具の持出・返却を入力してください（例: バッテリー 2,3番 池下現場）
+                    </div>
+                  )}
+
+                  {/* 複数候補 → 選択 */}
+                  {!busy && active.phase === "candidates" && (
+                    <div className="border border-warning/30 bg-warning/5 rounded-md p-sm flex flex-col gap-xs">
+                      <div className="text-label-xs text-warning font-bold">
+                        候補を選択してください
+                      </div>
+                      {active.candidates.map((c: ItemCandidate) => (
+                        <button
+                          key={c.itemId}
+                          type="button"
+                          onClick={() => setActive((s) => (s ? chooseCandidate(s, c) : s))}
+                          className="text-left text-body-sm rounded-md px-md py-sm min-h-[44px] border border-divider bg-surface text-ink"
+                        >
+                          {c.name}
+                          <span className="text-label-xs text-text-secondary ml-xs">
+                            （{c.trackingType === "individual" ? "個体管理" : "数量管理"}）
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* rally: 不足必須を 1 つ尋ねる */}
+                  {!busy && active.phase === "rally" && field && (
+                    <div className="border border-divider rounded-lg p-md flex flex-col gap-sm">
+                      <div className="text-body-sm text-ink">
+                        {active.itemName ? `${active.itemName}: ` : ""}
+                        {field.label}を入力してください
+                      </div>
+
+                      {field.type === "enum" ? (
+                        <div className="flex gap-sm flex-wrap">
+                          {(field.options ?? []).map((opt) => (
+                            <button
+                              key={opt}
+                              type="button"
+                              onClick={() =>
+                                setActive((s) => (s ? answerField(s, field.name, opt) : s))
+                              }
+                              className="bg-surface border border-divider text-ink rounded-md px-md py-sm min-h-[44px] text-body-sm"
+                            >
+                              {opt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex items-end gap-sm">
+                          <input
+                            inputMode="numeric"
+                            value={rallyInput}
+                            onChange={(e) => setRallyInput(e.target.value)}
+                            placeholder={field.name === "units" ? "例: 2,3" : "数量"}
+                            className="flex-1 bg-background-subtle border border-divider rounded-md px-md py-sm text-body-sm focus:outline-none focus:border-primary"
+                          />
+                          <button
+                            type="button"
+                            disabled={!rallyInput.trim()}
+                            onClick={() => {
+                              if (field.name === "units") {
+                                const nums = parseNumbers(rallyInput);
+                                if (nums.length === 0) {
+                                  setError("番号を数字で入力してください（例: 2,3）");
+                                  return; // 無効入力では確定せず入力も消さない
+                                }
+                                setError(null);
+                                setActive((s) => (s ? applyUnitNumbers(s, nums) : s));
+                              } else {
+                                // quantity は Postgres integer。小数を弾き、正の整数のみ受理する。
+                                const raw = rallyInput.trim();
+                                const digits = raw.replace(/[^\d]/g, "");
+                                const n = Number(digits);
+                                if (
+                                  digits === "" ||
+                                  /[.．]/.test(raw) ||
+                                  !Number.isInteger(n) ||
+                                  n <= 0
+                                ) {
+                                  setError("数量は1以上の整数で入力してください（例: 5）");
+                                  return;
+                                }
+                                setError(null);
+                                setActive((s) => (s ? answerField(s, field.name, n) : s));
+                              }
+                              setRallyInput("");
+                            }}
+                            className="bg-primary text-surface font-bold rounded-md px-md py-sm min-h-[44px] disabled:opacity-40"
+                          >
+                            確定
+                          </button>
+                        </div>
+                      )}
+
+                      {active.issues.length > 0 && (
+                        <div className="text-label-xs text-error whitespace-pre-wrap">
+                          {active.issues.map((iss) => iss.message).join("\n")}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ready: サマリー + 実行 */}
+                  {!busy && active.phase === "ready" && (
+                    <ReadySummary
+                      active={active}
+                      onExecute={onExecute}
+                      onChooseSite={(c) => setActive((s) => (s ? chooseSite(s, c) : s))}
+                    />
+                  )}
+
+                  {error && (
+                    <div className="text-label-xs text-error whitespace-pre-wrap">{error}</div>
+                  )}
+
+                  {!busy && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActive(null);
+                        setRallyInput("");
+                        setError(null);
+                      }}
+                      className="self-start text-label-xs text-text-secondary underline"
+                    >
+                      やり直す
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {error && !active && (
+              <div className="flex justify-start">
+                <div className="text-label-xs text-error">{error}</div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -530,21 +321,26 @@ export default function InputPage() {
       <div className="border-t border-divider bg-surface px-md py-sm">
         <div className="flex items-end gap-sm">
           <textarea
-            ref={inputRef}
             value={inputText}
-            onChange={handleTextChange}
-            onKeyDown={handleKeyDown}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-            placeholder={isReviewing ? "修正内容を入力..." : "工具名・番号・現場を入力..."}
-            className="flex-1 bg-background-subtle border border-divider rounded-2xl px-md py-sm text-body-sm placeholder:text-text-secondary focus:outline-none focus:border-primary resize-none leading-normal"
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={
+              barEnabled ? "工具名・番号・現場を入力..." : "上の選択肢で回答してください"
+            }
+            disabled={!barEnabled || busy}
+            className="flex-1 bg-background-subtle border border-divider rounded-2xl px-md py-sm text-body-sm placeholder:text-text-secondary focus:outline-none focus:border-primary resize-none leading-normal disabled:opacity-50"
             rows={1}
             style={{ minHeight: 40, maxHeight: 120 }}
           />
           <button
             type="button"
-            onClick={handleSend}
-            disabled={!inputText.trim() || isBusy}
+            onClick={() => void send()}
+            disabled={!inputText.trim() || busy || !barEnabled}
             className="bg-primary text-surface rounded-full w-10 h-10 flex items-center justify-center disabled:opacity-40 transition-all shrink-0"
             aria-label="送信"
           >
@@ -554,6 +350,63 @@ export default function InputPage() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** ready フェーズのサマリーカード + 実行ボタン。 */
+function ReadySummary({
+  active,
+  onExecute,
+  onChooseSite,
+}: {
+  active: HostState;
+  onExecute: () => void;
+  onChooseSite: (c: SiteCandidate) => void;
+}) {
+  const tone = signalToken(active.signal);
+  const siteResolved = !!active.record.fields[TOOLS_FIELD.site]; // site があれば project_id 解決済み
+  return (
+    <div className={`border ${tone.border} ${tone.bg} rounded-lg p-md flex flex-col gap-sm`}>
+      <div className="text-body-sm text-ink font-bold">{summarize(active)}</div>
+
+      {/* 現場の解決状態 */}
+      {active.pendingRefs.site && siteResolved && (
+        <div className="text-label-xs text-success">✓ 現場: {active.pendingRefs.site}</div>
+      )}
+      {!siteResolved && active.siteCandidates.length > 0 && (
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-warning font-bold">現場の候補を選択（任意）</div>
+          {active.siteCandidates.map((c) => (
+            <button
+              key={c.projectId}
+              type="button"
+              onClick={() => onChooseSite(c)}
+              className="text-left text-body-sm rounded-md px-md py-sm min-h-[40px] border border-divider bg-surface text-ink"
+            >
+              {c.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {!siteResolved && active.siteCandidates.length === 0 && active.pendingRefs.site && (
+        <div className="text-label-xs text-text-secondary">
+          現場: {active.pendingRefs.site}（未照合・記録には残しません）
+        </div>
+      )}
+
+      {active.issues.length > 0 && (
+        <div className={`text-label-xs ${tone.text} whitespace-pre-wrap`}>
+          {active.issues.map((iss) => iss.message).join("\n")}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onExecute}
+        className="bg-primary text-surface font-bold rounded-md py-sm min-h-[44px] shadow-primary-cta"
+      >
+        登録する
+      </button>
     </div>
   );
 }
