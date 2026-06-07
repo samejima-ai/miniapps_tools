@@ -38,6 +38,12 @@ __pycache__/
 # v5.8.0 PR #50 review feedback で repo にコミット不適切と確定（ブランチ間競合リスク）
 .gemini/
 
+# Node / pnpm workspace (root workspace added in CaaF gen-2 M-A)
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
