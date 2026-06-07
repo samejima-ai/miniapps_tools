@@ -245,9 +245,17 @@ export default function InputPage() {
                                 setError(null);
                                 setActive((s) => (s ? applyUnitNumbers(s, nums) : s));
                               } else {
-                                const n = Number(rallyInput.replace(/[^\d.]/g, ""));
-                                if (!Number.isFinite(n) || n <= 0) {
-                                  setError("数量を正しい数値で入力してください");
+                                // quantity は Postgres integer。小数を弾き、正の整数のみ受理する。
+                                const raw = rallyInput.trim();
+                                const digits = raw.replace(/[^\d]/g, "");
+                                const n = Number(digits);
+                                if (
+                                  digits === "" ||
+                                  /[.．]/.test(raw) ||
+                                  !Number.isInteger(n) ||
+                                  n <= 0
+                                ) {
+                                  setError("数量は1以上の整数で入力してください（例: 5）");
                                   return;
                                 }
                                 setError(null);
