@@ -21,7 +21,10 @@ export type Extractor = (input: string, app: CaaFApp) => Promise<Record<string, 
 
 /**
  * 抽出結果から CaaFRecord を組み立てる純関数。
+ * - schema 外フィールドは Mapper 段階で破棄する（FW Don't #1: スキーマ外フィールドを生成しない）。
+ *   base 由来・extracted 由来の双方に適用し、host UI が record.fields を直接描画しても混入しない。
  * - 既存 record があればフィールドをマージ（ユーザー確定値 source="user" は AI 値で上書きしない）。
+ * - null/undefined は「書かれていない」= 既存値を消さない（remove は Intent 経由で行う）。
  * - 未充足 default はここでは埋めない（Resolver/applyDefaults が担う）。
  */
 export function buildRecord(
@@ -29,13 +32,20 @@ export function buildRecord(
   extracted: Record<string, CaaFFieldValue>,
   base: CaaFRecord | null = null,
 ): CaaFRecord {
-  const fields: Record<string, CaaFFieldValue> = { ...(base?.fields ?? {}) };
+  const allowed = new Set(app.schema.map((f) => f.name));
+  const fields: Record<string, CaaFFieldValue> = {};
+
+  // base のうち schema に存在するフィールドだけ引き継ぐ（Don't #1）。
+  for (const [name, fv] of Object.entries(base?.fields ?? {})) {
+    if (allowed.has(name)) fields[name] = fv;
+  }
 
   for (const [name, incoming] of Object.entries(extracted)) {
+    if (!allowed.has(name)) continue; // Don't #1: schema 外は Mapper が破棄
     const existing = fields[name];
     // ユーザー確定値は AI 抽出で上書きしない（設計原則 3: 確定はユーザー）。
     if (existing && existing.source === "user") continue;
-    // null は「書かれていない」= 既存値を消さない（remove は Intent 経由で行う）。
+    // null は「書かれていない」= 既存値を消さない。
     if (incoming.value === null || incoming.value === undefined) continue;
     fields[name] = incoming;
   }

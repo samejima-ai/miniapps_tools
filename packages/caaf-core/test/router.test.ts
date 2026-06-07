@@ -51,6 +51,25 @@ describe("routeByScores (FW §5 確信度分岐)", () => {
   it("returns fallback for empty scores", () => {
     expect(routeByScores([], apps).mode).toBe("fallback");
   });
+
+  it("ignores scores for appIds absent from apps (defensive against bad scorer output)", () => {
+    // "ghost" は apps に存在しない。スコア最高でも採用せず、既知の "sample" で判定する。
+    const d = routeByScores(
+      [
+        { appId: "ghost", score: 0.99 },
+        { appId: "sample", score: 0.85 },
+      ],
+      apps,
+    );
+    expect(d.mode).toBe("auto");
+    expect(d.appId).toBe("sample");
+  });
+
+  it("falls back when every score references an unknown app", () => {
+    const d = routeByScores([{ appId: "ghost", score: 0.99 }], apps);
+    expect(d.mode).toBe("fallback");
+    expect(d.appId).toBeUndefined();
+  });
 });
 
 describe("keywordScores", () => {

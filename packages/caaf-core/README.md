@@ -39,10 +39,14 @@ Core が依存しない（= 利用者が注入する）4 点: `CaaFAdapter` / `I
 ## 開発
 
 ```bash
-pnpm typecheck   # tsc --noEmit（外部依存ゼロなので install 不要で通る）
-pnpm test        # vitest（純ロジックの unit test）
-pnpm purity      # Core純度 grep 検証（src/ に固有名詞・外部 import がないこと）
+pnpm typecheck   # tsc --noEmit（pnpm 版は devDeps の tsc を使うため要 install）
+pnpm test        # vitest（純ロジックの unit test。要 install）
+pnpm purity      # Core純度 grep 検証（Node 標準のみ・install 不要）
 ```
+
+> Core は**外部 runtime 依存ゼロ**なので、`pnpm` を介さずグローバル `tsc --noEmit` でも型検査が通る
+> （`pnpm typecheck`/`pnpm test` は devDeps の typescript/vitest を使うため通常は `pnpm install` が必要）。
+> `pnpm purity` は Node 標準モジュールのみで動くため install 不要。
 
 ## ステータス
 

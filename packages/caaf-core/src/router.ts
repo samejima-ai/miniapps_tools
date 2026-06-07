@@ -49,12 +49,16 @@ export function routeByScores(
   apps: CaaFApp[],
   thresholds: RouteThresholds = DEFAULT_ROUTE_THRESHOLDS,
 ): RouteDecision {
-  if (scores.length === 0) return { mode: "fallback" };
+  // 防御: 注入された scorer（LLM 等）が apps に存在しない appId を返しても、
+  // 存在しない App を auto/candidate で確定しない。既知 App のスコアだけで判定する。
+  const known = new Set(apps.map((a) => a.id));
+  const valid = scores.filter((s) => known.has(s.appId));
+  if (valid.length === 0) return { mode: "fallback" };
 
   const priorityOf = (appId: string): number =>
     apps.find((a) => a.id === appId)?.routing.priority ?? 0;
 
-  const sorted = [...scores].sort(
+  const sorted = [...valid].sort(
     (a, b) => b.score - a.score || priorityOf(b.appId) - priorityOf(a.appId),
   );
   const top = sorted[0];
