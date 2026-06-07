@@ -41,9 +41,12 @@ export function createToolsHost(ctx: { movedBy: string }) {
 
   /**
    * 現場名（pendingRefs.site）を read 解決して record.site に昇格する（M-E.3）。
-   * 既に解決済み（record に site あり）なら何もしない。現場は item と独立に解決できる。
+   * item が解決済みの局面（rally/ready）のみで行う: applySiteResolution は recompute を伴うため、
+   * not_found/candidates フェーズで呼ぶと phase が誤って rally/ready に化ける（言い直し誘導が消える）。
+   * 既に解決済み（record に site あり）なら何もしない。
    */
   async function resolveSiteRef(state: HostState): Promise<HostState> {
+    if (state.phase !== "rally" && state.phase !== "ready") return state;
     const siteName = state.pendingRefs.site;
     if (!siteName || state.record.fields[TOOLS_FIELD.site]) return state;
     const sites = (await adapter.read(state.app, {
@@ -79,8 +82,8 @@ export function createToolsHost(ctx: { movedBy: string }) {
       const extracted = await extract(text, toolsApp);
       const captured = applyExtractedRecord(base, extracted);
       if (!captured.itemName) {
-        // 工具名が取れない → not_found 扱い（空候補で分岐）。
-        return resolveSiteRef(captured);
+        // 工具名が取れない → not_found（言い直し誘導）。site 解決は item 未確定では行わない。
+        return applyItemCandidates(captured, []);
       }
 
       const candidates = (await adapter.read(toolsApp, {
@@ -88,6 +91,7 @@ export function createToolsHost(ctx: { movedBy: string }) {
         name: captured.itemName,
       })) as ItemCandidate[];
 
+      // item 解決後（rally/ready）のみ resolveSiteRef が現場を昇格する（guard 済）。
       return resolveSiteRef(applyItemCandidates(captured, candidates));
     },
 

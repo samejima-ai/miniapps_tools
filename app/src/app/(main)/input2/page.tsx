@@ -15,6 +15,7 @@ import {
   type HostState,
   type ItemCandidate,
   type SiteCandidate,
+  TOOLS_FIELD,
   answerField,
   applyUnitNumbers,
   chooseCandidate,
@@ -189,7 +190,7 @@ export default function Input2Page() {
                         <button
                           key={c.itemId}
                           type="button"
-                          onClick={() => setActive(chooseCandidate(active, c))}
+                          onClick={() => setActive((s) => (s ? chooseCandidate(s, c) : s))}
                           className="text-left text-body-sm rounded-md px-md py-sm min-h-[44px] border border-divider bg-surface text-ink"
                         >
                           {c.name}
@@ -215,7 +216,9 @@ export default function Input2Page() {
                             <button
                               key={opt}
                               type="button"
-                              onClick={() => setActive(answerField(active, field.name, opt))}
+                              onClick={() =>
+                                setActive((s) => (s ? answerField(s, field.name, opt) : s))
+                              }
                               className="bg-surface border border-divider text-ink rounded-md px-md py-sm min-h-[44px] text-body-sm"
                             >
                               {opt}
@@ -242,7 +245,7 @@ export default function Input2Page() {
                                   return; // 無効入力では確定せず入力も消さない
                                 }
                                 setError(null);
-                                setActive(applyUnitNumbers(active, nums));
+                                setActive((s) => (s ? applyUnitNumbers(s, nums) : s));
                               } else {
                                 const n = Number(rallyInput.replace(/[^\d.]/g, ""));
                                 if (!Number.isFinite(n) || n <= 0) {
@@ -250,7 +253,7 @@ export default function Input2Page() {
                                   return;
                                 }
                                 setError(null);
-                                setActive(answerField(active, field.name, n));
+                                setActive((s) => (s ? answerField(s, field.name, n) : s));
                               }
                               setRallyInput("");
                             }}
@@ -274,7 +277,7 @@ export default function Input2Page() {
                     <ReadySummary
                       active={active}
                       onExecute={onExecute}
-                      onChooseSite={(c) => setActive(chooseSite(active, c))}
+                      onChooseSite={(c) => setActive((s) => (s ? chooseSite(s, c) : s))}
                     />
                   )}
 
@@ -356,7 +359,7 @@ function ReadySummary({
   onChooseSite: (c: SiteCandidate) => void;
 }) {
   const tone = signalToken(active.signal);
-  const siteResolved = !!active.record.fields.site; // record に site があれば project_id 解決済み
+  const siteResolved = !!active.record.fields[TOOLS_FIELD.site]; // site があれば project_id 解決済み
   return (
     <div className={`border ${tone.border} ${tone.bg} rounded-lg p-md flex flex-col gap-sm`}>
       <div className="text-body-sm text-ink font-bold">{summarize(active)}</div>
