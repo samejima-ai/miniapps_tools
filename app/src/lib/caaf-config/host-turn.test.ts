@@ -5,6 +5,7 @@ import {
   answerField,
   applyExtractedRecord,
   applyItemCandidates,
+  applyUnitNumbers,
   chooseCandidate,
   confirmForExecute,
   hostSignal,
@@ -261,6 +262,26 @@ describe("recompute は applyDefaults で action=checkout を充当", () => {
   it("action 未指定でも default で checkout", () => {
     const s = recompute(capture({ [TOOLS_FIELD.item]: ai("軍手") }, [quantityCandidate()]));
     expect(s.record.fields[TOOLS_FIELD.action]?.value).toBe("checkout");
+  });
+});
+
+describe("applyUnitNumbers — rally の番号回答（client 側 availableUnits 解決）", () => {
+  it("番号未指定 individual の rally で番号回答 → units 確定 → ready", () => {
+    let s = capture({ [TOOLS_FIELD.item]: ai("バッテリー") }, [individualCandidate()]);
+    expect(s.phase).toBe("rally");
+    expect(s.availableUnits.map((u) => u.unitNumber)).toEqual([2, 3]); // 解決済 item の在庫を保持
+    s = applyUnitNumbers(s, [2, 3]);
+    expect(s.phase).toBe("ready");
+    const units = s.record.fields[TOOLS_FIELD.units]?.value as ResolvedUnit[];
+    expect(units.map((u) => u.unitNumber)).toEqual([2, 3]);
+  });
+
+  it("存在しない番号回答 → missing issue + rally 継続（units 未設定）", () => {
+    let s = capture({ [TOOLS_FIELD.item]: ai("バッテリー") }, [individualCandidate()]);
+    s = applyUnitNumbers(s, [9]);
+    expect(s.issues.some((i) => i.kind === "missing_units")).toBe(true);
+    expect(s.phase).toBe("rally");
+    expect(s.signal).toBe("red");
   });
 });
 

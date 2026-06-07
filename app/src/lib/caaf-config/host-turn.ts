@@ -76,6 +76,8 @@ export interface HostState {
   candidates: ItemCandidate[];
   /** 解決中/解決済みの工具表示名。 */
   itemName: string | null;
+  /** 解決済み item の在庫個体（rally で番号回答を client 側解決するため保持。quantity は []）。 */
+  availableUnits: ResolvedUnit[];
   /** id 未解決の reference 名（site/holder）。 */
   pendingRefs: PendingRefs;
   issues: HostIssue[];
@@ -89,6 +91,7 @@ export function initialHostState(): HostState {
     record: { app: toolsApp.id, fields: {}, status: "draft" },
     candidates: [],
     itemName: null,
+    availableUnits: [],
     pendingRefs: { site: null, holder: null },
     issues: [],
     phase: "idle",
@@ -161,6 +164,7 @@ export function applyExtractedRecord(
       holder: refName(extracted, TOOLS_FIELD.holder) ?? prev.pendingRefs.holder,
     },
     candidates: [],
+    availableUnits: [],
     issues: [],
     phase: "idle",
     // 新 record に基づき signal を再計算（直前ターンの signal を残さない）。
@@ -261,7 +265,15 @@ function resolveToCandidate(
   // effective app で sanitize（individual なら quantity を、quantity なら units を破棄）。
   const record = sanitizeRecord(app, { app: app.id, fields, status: "mapped" });
 
-  return recompute({ ...prev, app, record, itemName: candidate.name, candidates: [], issues });
+  return recompute({
+    ...prev,
+    app,
+    record,
+    itemName: candidate.name,
+    availableUnits: candidate.units, // rally の番号回答を client 側で解決するため保持
+    candidates: [],
+    issues,
+  });
 }
 
 /** 抽出された units field（番号配列 or 解決済み）から要求番号 number[] を取り出す。 */
@@ -280,6 +292,35 @@ function readRequestedNumbers(record: CaaFRecord): number[] {
 /** rally: ユーザー回答を 1 field に適用して再計算（純）。 */
 export function answerField(state: HostState, field: string, value: unknown): HostState {
   return recompute({ ...state, record: applyAnswer(state.record, field, value) });
+}
+
+/**
+ * rally: 個体管理で番号を回答（client 側解決）。state.availableUnits に突き合わせて
+ * units field を確定し、missing/already_out を issue 化する（resolveToCandidate と同じ規約）。
+ */
+export function applyUnitNumbers(state: HostState, numbers: number[]): HostState {
+  const res = resolveRequestedUnits(numbers, state.availableUnits);
+  const issues: HostIssue[] = [];
+  if (res.missing.length > 0) {
+    issues.push({
+      kind: "missing_units",
+      message: `${itemLabel(state.itemName)} に存在しない番号: ${res.missing.join(", ")}`,
+    });
+  }
+  const isCheckout = fieldVal(state.record, TOOLS_FIELD.action) !== "return";
+  if (isCheckout && res.alreadyOut.length > 0) {
+    issues.push({
+      kind: "already_out",
+      message: `${itemLabel(state.itemName)} の持出中番号: ${res.alreadyOut.map((u) => u.unitNumber).join(", ")}`,
+    });
+  }
+  if (res.resolved.length === 0) {
+    // 全 missing 等 → units は未設定のまま rally 継続（issue で番号を示す）。
+    return recompute({ ...state, issues });
+  }
+  const next = answerField(state, TOOLS_FIELD.units, res.resolved);
+  // 新 issues に合わせて signal を再計算（answerField は旧 issues で計算済みのため）。
+  return { ...next, issues, signal: hostSignal(next.app, next.record, issues) };
 }
 
 /** rally: 任意 field をスキップして再計算（必須はスキップ不可、Core が保証）。 */

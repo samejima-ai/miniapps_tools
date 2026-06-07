@@ -38,6 +38,7 @@ export {
   applyItemCandidates,
   chooseCandidate,
   answerField,
+  applyUnitNumbers,
   skipField,
   pendingField,
   confirmForExecute,
