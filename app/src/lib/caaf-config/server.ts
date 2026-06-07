@@ -8,3 +8,4 @@
 
 export { createExtractor, createIntentClassifier } from "./factories";
 export { isLLMConfigured } from "./llm";
+export { createToolsAdapter, type ItemCandidate } from "./tools-adapter";
