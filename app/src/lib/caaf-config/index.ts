@@ -24,6 +24,7 @@ export {
   type ResolvedUnit,
   type MovementRow,
   type ItemCandidate,
+  type SiteCandidate,
   type UnitResolution,
 } from "./tools-mapping";
 
@@ -39,6 +40,8 @@ export {
   chooseCandidate,
   answerField,
   applyUnitNumbers,
+  applySiteResolution,
+  chooseSite,
   skipField,
   pendingField,
   confirmForExecute,

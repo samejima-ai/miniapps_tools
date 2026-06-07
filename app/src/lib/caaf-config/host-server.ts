@@ -23,6 +23,7 @@ import {
   type HostState,
   applyExtractedRecord,
   applyItemCandidates,
+  applySiteResolution,
   confirmForExecute,
   initialHostState,
   intentPhase,
@@ -30,13 +31,30 @@ import {
 import { createToolsAdapter } from "./tools-adapter";
 import { toolsApp } from "./tools-app";
 import { TOOLS_FIELD } from "./tools-fields";
-import type { ItemCandidate } from "./tools-mapping";
+import type { ItemCandidate, SiteCandidate } from "./tools-mapping";
 
 /** 工具 host。ctx.movedBy = 入力者（D-7）。host（Server Action）が現在ユーザーで生成する。 */
 export function createToolsHost(ctx: { movedBy: string }) {
   const classifyIntent = createIntentClassifier();
   const extract = createExtractor();
   const adapter = createToolsAdapter(ctx);
+
+  /**
+   * 現場名（pendingRefs.site）を read 解決して record.site に昇格する（M-E.3）。
+   * item が解決済みの局面（rally/ready）のみで行う: applySiteResolution は recompute を伴うため、
+   * not_found/candidates フェーズで呼ぶと phase が誤って rally/ready に化ける（言い直し誘導が消える）。
+   * 既に解決済み（record に site あり）なら何もしない。
+   */
+  async function resolveSiteRef(state: HostState): Promise<HostState> {
+    if (state.phase !== "rally" && state.phase !== "ready") return state;
+    const siteName = state.pendingRefs.site;
+    if (!siteName || state.record.fields[TOOLS_FIELD.site]) return state;
+    const sites = (await adapter.read(state.app, {
+      kind: "resolve-site",
+      name: siteName,
+    })) as SiteCandidate[];
+    return applySiteResolution(state, sites);
+  }
 
   return {
     /**
@@ -64,7 +82,7 @@ export function createToolsHost(ctx: { movedBy: string }) {
       const extracted = await extract(text, toolsApp);
       const captured = applyExtractedRecord(base, extracted);
       if (!captured.itemName) {
-        // 工具名が取れない → not_found 扱い（空候補で分岐）。
+        // 工具名が取れない → not_found（言い直し誘導）。site 解決は item 未確定では行わない。
         return applyItemCandidates(captured, []);
       }
 
@@ -73,7 +91,8 @@ export function createToolsHost(ctx: { movedBy: string }) {
         name: captured.itemName,
       })) as ItemCandidate[];
 
-      return applyItemCandidates(captured, candidates);
+      // item 解決後（rally/ready）のみ resolveSiteRef が現場を昇格する（guard 済）。
+      return resolveSiteRef(applyItemCandidates(captured, candidates));
     },
 
     /**
