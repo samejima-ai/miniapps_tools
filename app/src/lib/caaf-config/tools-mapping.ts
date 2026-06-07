@@ -38,6 +38,12 @@ export interface ItemCandidate {
   units: ResolvedUnit[];
 }
 
+/** read("resolve-site") が返す現場（案件）候補。projectId は public.projects.project_id。 */
+export interface SiteCandidate {
+  projectId: string;
+  name: string;
+}
+
 /** ユーザー要求番号をマスタ個体に突き合わせた結果（純関数 resolveRequestedUnits の出力）。 */
 export interface UnitResolution {
   /** マスタに存在した個体。 */

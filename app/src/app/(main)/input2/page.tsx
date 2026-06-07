@@ -14,9 +14,11 @@
 import {
   type HostState,
   type ItemCandidate,
+  type SiteCandidate,
   answerField,
   applyUnitNumbers,
   chooseCandidate,
+  chooseSite,
   pendingField,
   summarize,
 } from "@/lib/caaf-config";
@@ -269,7 +271,11 @@ export default function Input2Page() {
 
                   {/* ready: サマリー + 実行 */}
                   {!busy && active.phase === "ready" && (
-                    <ReadySummary active={active} onExecute={onExecute} />
+                    <ReadySummary
+                      active={active}
+                      onExecute={onExecute}
+                      onChooseSite={(c) => setActive(chooseSite(active, c))}
+                    />
                   )}
 
                   {error && (
@@ -340,16 +346,46 @@ export default function Input2Page() {
 }
 
 /** ready フェーズのサマリーカード + 実行ボタン。 */
-function ReadySummary({ active, onExecute }: { active: HostState; onExecute: () => void }) {
+function ReadySummary({
+  active,
+  onExecute,
+  onChooseSite,
+}: {
+  active: HostState;
+  onExecute: () => void;
+  onChooseSite: (c: SiteCandidate) => void;
+}) {
   const tone = signalToken(active.signal);
+  const siteResolved = !!active.record.fields.site; // record に site があれば project_id 解決済み
   return (
     <div className={`border ${tone.border} ${tone.bg} rounded-lg p-md flex flex-col gap-sm`}>
       <div className="text-body-sm text-ink font-bold">{summarize(active)}</div>
-      {active.pendingRefs.site && (
-        <div className="text-label-xs text-text-secondary">
-          現場: {active.pendingRefs.site}（未照合）
+
+      {/* 現場の解決状態 */}
+      {active.pendingRefs.site && siteResolved && (
+        <div className="text-label-xs text-success">✓ 現場: {active.pendingRefs.site}</div>
+      )}
+      {!siteResolved && active.siteCandidates.length > 0 && (
+        <div className="flex flex-col gap-xs">
+          <div className="text-label-xs text-warning font-bold">現場の候補を選択（任意）</div>
+          {active.siteCandidates.map((c) => (
+            <button
+              key={c.projectId}
+              type="button"
+              onClick={() => onChooseSite(c)}
+              className="text-left text-body-sm rounded-md px-md py-sm min-h-[40px] border border-divider bg-surface text-ink"
+            >
+              {c.name}
+            </button>
+          ))}
         </div>
       )}
+      {!siteResolved && active.siteCandidates.length === 0 && active.pendingRefs.site && (
+        <div className="text-label-xs text-text-secondary">
+          現場: {active.pendingRefs.site}（未照合・記録には残しません）
+        </div>
+      )}
+
       {active.issues.length > 0 && (
         <div className={`text-label-xs ${tone.text} whitespace-pre-wrap`}>
           {active.issues.map((iss) => iss.message).join("\n")}

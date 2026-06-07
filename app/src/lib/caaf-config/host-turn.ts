@@ -34,7 +34,12 @@ import {
 } from "@caaf/core";
 import { toolsApp, toolsAppForTracking } from "./tools-app";
 import { TOOLS_FIELD } from "./tools-fields";
-import { type ItemCandidate, type ResolvedUnit, resolveRequestedUnits } from "./tools-mapping";
+import {
+  type ItemCandidate,
+  type ResolvedUnit,
+  type SiteCandidate,
+  resolveRequestedUnits,
+} from "./tools-mapping";
 
 /** M-E.1 で executable record に入れてよい（今 解決可能な）フィールド。site/holder は M-E.2。 */
 const WRITABLE_FIELDS: ReadonlySet<string> = new Set([
@@ -78,8 +83,10 @@ export interface HostState {
   itemName: string | null;
   /** 解決済み item の在庫個体（rally で番号回答を client 側解決するため保持。quantity は []）。 */
   availableUnits: ResolvedUnit[];
-  /** id 未解決の reference 名（site/holder）。 */
+  /** id 未解決の reference 名（site/holder）。site は解決後も表示名として保持する。 */
   pendingRefs: PendingRefs;
+  /** 現場の複数候補（M-E.3。1 件確定時は record.site に昇格、複数/0 件は未昇格）。 */
+  siteCandidates: SiteCandidate[];
   issues: HostIssue[];
   signal: Signal;
 }
@@ -93,6 +100,7 @@ export function initialHostState(): HostState {
     itemName: null,
     availableUnits: [],
     pendingRefs: { site: null, holder: null },
+    siteCandidates: [],
     issues: [],
     phase: "idle",
     signal: "red",
@@ -165,6 +173,7 @@ export function applyExtractedRecord(
     },
     candidates: [],
     availableUnits: [],
+    siteCandidates: [],
     issues: [],
     phase: "idle",
     // 新 record に基づき signal を再計算（直前ターンの signal を残さない）。
@@ -326,6 +335,38 @@ export function applyUnitNumbers(state: HostState, numbers: number[]): HostState
 /** rally: 任意 field をスキップして再計算（必須はスキップ不可、Core が保証）。 */
 export function skipField(state: HostState, field: string): HostState {
   return recompute({ ...state, record: skipOptional(state.app, state.record, field) });
+}
+
+/** 現場 field（reference）に解決済み project_id を入れる純関数。 */
+function setSite(state: HostState, candidate: SiteCandidate): HostState {
+  const fields = {
+    ...state.record.fields,
+    [TOOLS_FIELD.site]: { value: candidate.projectId, confidence: 1, source: "context" as const },
+  };
+  return recompute({
+    ...state,
+    record: { ...state.record, fields },
+    // pendingRefs.site は確定名で表示更新。siteCandidates はクリア。
+    pendingRefs: { ...state.pendingRefs, site: candidate.name },
+    siteCandidates: [],
+  });
+}
+
+/**
+ * read("resolve-site") の候補を取り込む（M-E.3、純判断）。
+ *  - 1 件 → 現場を確定（record.site に project_id を昇格）。
+ *  - 0 件 → 未照合のまま（pendingRefs.site の表示名は維持、record には入れない＝write 安全）。
+ *  - 複数 → siteCandidates に保持し UI で選択（未昇格）。
+ * 現場は任意フィールドのため、未確定でも rally/ready の必須充足には影響しない。
+ */
+export function applySiteResolution(state: HostState, candidates: SiteCandidate[]): HostState {
+  if (candidates.length === 1) return setSite(state, candidates[0] as SiteCandidate);
+  return { ...state, siteCandidates: candidates };
+}
+
+/** 複数現場候補からユーザーが 1 つ選んだ（純）。 */
+export function chooseSite(state: HostState, candidate: SiteCandidate): HostState {
+  return setSite(state, candidate);
 }
 
 /** 次に尋ねるべき field（rally 中）。なければ null（= ready）。 */

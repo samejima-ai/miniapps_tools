@@ -15,19 +15,20 @@
 import "server-only";
 
 import { insertMovement } from "@/lib/supabase/movements";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createPublicServerClient, createServerSupabaseClient } from "@/lib/supabase/server";
 import type { CaaFAdapter, CaaFApp, CaaFField, CaaFRecord, CaaFWriteResult } from "@caaf/core";
 import { toolsAppForTracking } from "./tools-app";
 import { TOOLS_FIELDS } from "./tools-fields";
 import {
   type ItemCandidate,
   type ResolvedUnit,
+  type SiteCandidate,
   buildMovementRows,
   recordToMovementInput,
 } from "./tools-mapping";
 
 // ItemCandidate は tools-mapping（純モジュール）に定義。後方互換のため再エクスポートする。
-export type { ItemCandidate };
+export type { ItemCandidate, SiteCandidate };
 
 type ToolsSupabase = Awaited<ReturnType<typeof createServerSupabaseClient>>;
 
@@ -113,6 +114,48 @@ async function resolveItem(supabase: ToolsSupabase, name: string): Promise<ItemC
 }
 
 /**
+ * 現場名 → 案件候補（project_name_aliases 完全一致 → public.projects ILIKE）。
+ * gen-1 resolveProjectFromSite と同型。public スキーマ未設定でも best-effort（失敗時は空）。
+ */
+async function resolveSite(supabase: ToolsSupabase, name: string): Promise<SiteCandidate[]> {
+  const trimmed = name.trim();
+  if (trimmed === "") return [];
+
+  // 0. alias 完全一致（学習済、tools スキーマ）→ 即解決
+  const { data: aliasHit, error: aliasErr } = await supabase
+    .from("project_name_aliases")
+    .select("project_id, canonical_name")
+    .eq("alias", trimmed.toLowerCase())
+    .limit(1);
+  if (aliasErr) console.warn("[tools-adapter] project alias fetch failed:", aliasErr.message);
+  const hit = aliasHit?.[0];
+  if (hit?.project_id) {
+    return [
+      { projectId: hit.project_id as string, name: (hit.canonical_name as string) ?? trimmed },
+    ];
+  }
+
+  // 1. public.projects ILIKE（best-effort: public クライアント未設定なら空）
+  try {
+    const pub = await createPublicServerClient();
+    const { data, error } = await pub
+      .from("projects")
+      .select("project_id, name")
+      .ilike("name", `%${trimmed}%`)
+      .is("deleted_at", null)
+      .limit(10);
+    if (error) {
+      console.warn("[tools-adapter] projects fetch failed:", error.message);
+      return [];
+    }
+    return (data ?? []).map((p) => ({ projectId: p.project_id as string, name: p.name as string }));
+  } catch (e) {
+    console.warn("[tools-adapter] public client unavailable:", e);
+    return [];
+  }
+}
+
+/**
  * 工具 db Adapter を生成する。ctx.movedBy = 入力者（D-7）。
  * host（M-E の Server Action）が現在ユーザーで生成して Core に注入する。
  */
@@ -136,7 +179,10 @@ export function createToolsAdapter(ctx: { movedBy: string }): CaaFAdapter {
       if (kind === "resolve-item") {
         return resolveItem(supabase, name);
       }
-      // 他種別（resolve-site / resolve-holder）は M-E で必要時に拡張。
+      if (kind === "resolve-site") {
+        return resolveSite(supabase, name);
+      }
+      // resolve-holder（employees の name→id）は未実装（gen-1 にも無し）。M-E.4 候補。
       return [];
     },
 

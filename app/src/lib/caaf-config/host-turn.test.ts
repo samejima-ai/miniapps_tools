@@ -5,8 +5,10 @@ import {
   answerField,
   applyExtractedRecord,
   applyItemCandidates,
+  applySiteResolution,
   applyUnitNumbers,
   chooseCandidate,
+  chooseSite,
   confirmForExecute,
   hostSignal,
   initialHostState,
@@ -17,7 +19,7 @@ import {
   summarize,
 } from "./host-turn";
 import { TOOLS_FIELD } from "./tools-fields";
-import type { ItemCandidate, ResolvedUnit } from "./tools-mapping";
+import type { ItemCandidate, ResolvedUnit, SiteCandidate } from "./tools-mapping";
 
 /** 抽出 field（source=ai）を素早く作る。 */
 const ai = (value: unknown, confidence = 0.9): CaaFFieldValue => ({
@@ -282,6 +284,57 @@ describe("applyUnitNumbers — rally の番号回答（client 側 availableUnits
     expect(s.issues.some((i) => i.kind === "missing_units")).toBe(true);
     expect(s.phase).toBe("rally");
     expect(s.signal).toBe("red");
+  });
+});
+
+describe("applySiteResolution / chooseSite（M-E.3 現場解決）", () => {
+  const site = (over: Partial<SiteCandidate> = {}): SiteCandidate => ({
+    projectId: "proj-1",
+    name: "池下現場",
+    ...over,
+  });
+  // 番号ありで ready になる個体入力（現場名は pendingRefs にある）。
+  const readyWithSite = () =>
+    capture(
+      {
+        [TOOLS_FIELD.item]: ai("バッテリー"),
+        [TOOLS_FIELD.units]: ai([2]),
+        [TOOLS_FIELD.site]: ai("池下"),
+      },
+      [individualCandidate()],
+    );
+
+  it("1 件 → record.site に project_id 昇格、pendingRefs.site は確定名に更新", () => {
+    const s = applySiteResolution(readyWithSite(), [site()]);
+    expect(s.record.fields[TOOLS_FIELD.site]?.value).toBe("proj-1");
+    expect(s.pendingRefs.site).toBe("池下現場");
+    expect(s.siteCandidates).toHaveLength(0);
+    expect(s.phase).toBe("ready"); // 現場は任意 → 充足に影響しない
+  });
+
+  it("複数 → record.site 未昇格・siteCandidates 保持（write 安全）", () => {
+    const s = applySiteResolution(readyWithSite(), [
+      site({ projectId: "a", name: "池下A" }),
+      site({ projectId: "b", name: "池下B" }),
+    ]);
+    expect(s.record.fields[TOOLS_FIELD.site]).toBeUndefined();
+    expect(s.siteCandidates).toHaveLength(2);
+  });
+
+  it("0 件 → 未昇格（未照合のまま、表示名は維持）", () => {
+    const s = applySiteResolution(readyWithSite(), []);
+    expect(s.record.fields[TOOLS_FIELD.site]).toBeUndefined();
+    expect(s.pendingRefs.site).toBe("池下");
+  });
+
+  it("chooseSite → 選んだ候補で record.site 確定", () => {
+    const multi = applySiteResolution(readyWithSite(), [
+      site({ projectId: "a", name: "池下A" }),
+      site({ projectId: "b", name: "池下B" }),
+    ]);
+    const chosen = chooseSite(multi, multi.siteCandidates[1] as SiteCandidate);
+    expect(chosen.record.fields[TOOLS_FIELD.site]?.value).toBe("b");
+    expect(chosen.siteCandidates).toHaveLength(0);
   });
 });
 
