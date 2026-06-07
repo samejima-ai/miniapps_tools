@@ -92,7 +92,9 @@ ${input}`;
 export function parseIntentResponse(raw: unknown): IntentResult {
   const r = (raw ?? {}) as RawIntent;
   const intent: Intent = INTENTS.includes(r.intent as Intent) ? (r.intent as Intent) : "add";
-  const target = typeof r.target === "string" && r.target !== "" ? r.target : undefined;
+  // LLM 出力の前後空白を許容しない（" amount" 等で schema 一致を取りこぼさないよう trim）。
+  const target =
+    typeof r.target === "string" && r.target.trim() !== "" ? r.target.trim() : undefined;
   const value = r.value === null || r.value === undefined || r.value === "" ? undefined : r.value;
   const reason = typeof r.reason === "string" ? r.reason : undefined;
 

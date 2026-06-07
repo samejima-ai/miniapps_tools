@@ -69,6 +69,11 @@ describe("parseIntentResponse (FW §6)", () => {
     });
   });
 
+  it("trims surrounding whitespace from target (LLM output robustness)", () => {
+    expect(parseIntentResponse({ intent: "correct", target: " amount " }).target).toBe("amount");
+    expect(parseIntentResponse({ intent: "correct", target: "   " }).target).toBeUndefined();
+  });
+
   it("keeps reason when present", () => {
     expect(parseIntentResponse({ intent: "execute", reason: "登録指示" })).toEqual({
       intent: "execute",

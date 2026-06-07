@@ -84,6 +84,12 @@ describe("parseExtraction (FW §7.1)", () => {
     expect(parseExtraction(app, { fields: { memo: { value: "hi" } } }).memo?.confidence).toBe(0.5);
   });
 
+  it("omits non-string values for string/date fields (no String() coercion)", () => {
+    expect(parseExtraction(app, { fields: { memo: { value: { a: 1 } } } }).memo).toBeUndefined();
+    expect(parseExtraction(app, { fields: { memo: { value: 123 } } }).memo).toBeUndefined();
+    expect(parseExtraction(app, { fields: { date: { value: 20260607 } } }).date).toBeUndefined();
+  });
+
   it("is defensive against malformed raw input", () => {
     expect(parseExtraction(app, null)).toEqual({});
     expect(parseExtraction(app, {})).toEqual({});

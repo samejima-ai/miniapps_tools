@@ -88,8 +88,10 @@ function normalizeValue(field: CaaFField, value: unknown): unknown {
     case "reference":
       return typeof value === "string" || typeof value === "number" ? value : null;
     default:
-      // string / date / datetime
-      return typeof value === "string" ? value : String(value);
+      // string / date / datetime: non-string は不正として省く。
+      // String(value) で coerce すると "[object Object]" や "123" が Core の型チェックを
+      // すり抜けて record に入りうるため、防御的に null（= 省略）にする。
+      return typeof value === "string" ? value : null;
   }
 }
 
