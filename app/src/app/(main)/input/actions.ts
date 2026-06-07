@@ -562,216 +562,257 @@ function buildUnitDetails(
   });
 }
 
+/** 上限つき並列 map（順序保持）。LIVE 経路で DB 同時接続が膨らむのを防ぐ。 */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++; // JS は単一スレッド → cursor++ はアトミック（worker 間で番号重複しない）
+      results[i] = await fn(items[i] as T, i);
+    }
+  }
+  const n = Math.min(Math.max(1, limit), items.length || 1);
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
+
+/** item 解決の最大同時実行数（DB 同時接続の上限。typical 入力は数件で全並列）。 */
+const RESOLVE_CONCURRENCY = 6;
+
 /**
  * LLM 抽出結果をマスタ DB と照合し、正式名称・番号存在を解決する。
  * 確認カード表示前に呼ぶことで、人間の入力ミスを確定前に補完・警告。
  */
 async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<ResolvedItem[]> {
   const supabase = await createServerSupabaseClient();
-  const resolved: ResolvedItem[] = [];
 
-  for (const item of extraction.items) {
-    // 0. エイリアス検索（学習済みマッピング → ILIKE より優先）
-    let matched: { id: string; name: string; tracking_type: string } | undefined;
+  // alias use_count の加算は、並列の read-then-write race を避けるため遅延集計する。
+  const aliasHits: Array<{ id: string; useCount: number }> = [];
 
-    // alias は learnAlias と同じく trim + lowercase で正規化（前後空白で hit を漏らさない）
-    const aliasKey = item.name.trim().toLowerCase();
-    const { data: aliasHit } = await supabase
-      .from("item_name_aliases")
-      .select("id, item_id, canonical_name, use_count")
-      .eq("alias", aliasKey)
-      .limit(1);
+  // 各 item の解決は独立 → 上限つき並列で N+1 直列待ちを解消（出力順は保持）。
+  // 上限なし Promise.all は items 数次第で DB 同時接続が膨らむため mapLimit で抑える。
+  const resolved: ResolvedItem[] = await mapLimit(
+    extraction.items,
+    RESOLVE_CONCURRENCY,
+    async (item): Promise<ResolvedItem> => {
+      // 0. エイリアス検索（学習済みマッピング → ILIKE より優先）
+      let matched: { id: string; name: string; tracking_type: string } | undefined;
 
-    if (aliasHit?.[0]) {
-      const { data: aliasItem } = await supabase
-        .from("items")
-        .select("id, name, tracking_type")
-        .eq("id", aliasHit[0].item_id)
-        .eq("is_active", true)
-        .single();
-      if (aliasItem) {
-        matched = aliasItem as typeof matched;
-        // エイリアスが照合で実際に使われた → use_count++ (確定前でもカウント)
-        await supabase
-          .from("item_name_aliases")
-          .update({
-            use_count: (aliasHit[0].use_count as number) + 1,
-            last_used_at: new Date().toISOString(),
-          })
-          .eq("id", aliasHit[0].id);
+      // alias は learnAlias と同じく trim + lowercase で正規化（前後空白で hit を漏らさない）
+      const aliasKey = item.name.trim().toLowerCase();
+      const { data: aliasHit } = await supabase
+        .from("item_name_aliases")
+        .select("id, item_id, canonical_name, use_count")
+        .eq("alias", aliasKey)
+        .limit(1);
+
+      if (aliasHit?.[0]) {
+        const { data: aliasItem } = await supabase
+          .from("items")
+          .select("id, name, tracking_type")
+          .eq("id", aliasHit[0].item_id)
+          .eq("is_active", true)
+          .single();
+        if (aliasItem) {
+          matched = aliasItem as typeof matched;
+          // 使用された alias を記録（実際の use_count++ は並列完了後にまとめて適用）。
+          // ※ 配列 push は単一スレッドで race しない（DB の read-then-write race を回避）。
+          aliasHits.push({
+            id: aliasHit[0].id as string,
+            useCount: aliasHit[0].use_count as number,
+          });
+        }
       }
-    }
 
-    // 1. エイリアス未ヒット → items ILIKE 部分一致
-    //    複数ヒットした場合は単純先頭採用せず、候補リストとして提示する
-    let ilikeCandidates: Array<{ id: string; name: string; tracking_type: string }> = [];
-    if (!matched) {
-      const { data: matchedItems } = await supabase
-        .from("items")
-        .select("id, name, tracking_type")
-        .ilike("name", `%${item.name}%`)
-        .eq("is_active", true)
-        .order("name", { ascending: true })
-        .limit(10);
+      // 1. エイリアス未ヒット → items ILIKE 部分一致
+      //    複数ヒットした場合は単純先頭採用せず、候補リストとして提示する
+      let ilikeCandidates: Array<{ id: string; name: string; tracking_type: string }> = [];
+      if (!matched) {
+        const { data: matchedItems } = await supabase
+          .from("items")
+          .select("id, name, tracking_type")
+          .ilike("name", `%${item.name}%`)
+          .eq("is_active", true)
+          .order("name", { ascending: true })
+          .limit(10);
 
-      ilikeCandidates = (matchedItems ?? []) as typeof ilikeCandidates;
+        ilikeCandidates = (matchedItems ?? []) as typeof ilikeCandidates;
 
-      // 単一ヒットのみ matched として確定。複数ヒットは下で候補提示に回す
-      if (ilikeCandidates.length === 1) {
-        matched = ilikeCandidates[0];
+        // 単一ヒットのみ matched として確定。複数ヒットは下で候補提示に回す
+        if (ilikeCandidates.length === 1) {
+          matched = ilikeCandidates[0];
+        }
       }
-    }
 
-    // 1b. 複数 ILIKE ヒット → 曖昧として候補提示モードへ
-    if (!matched && ilikeCandidates.length > 1) {
-      // 確度スコア: 完全一致(1.0) > 前方一致(0.9) > 含む(0.7)
-      const query = item.name.trim().toLowerCase();
-      const scored = ilikeCandidates.map((c) => {
-        const name = (c.name as string).toLowerCase();
-        let confidence: number;
-        if (name === query) confidence = 1.0;
-        else if (name.startsWith(query)) confidence = 0.9;
-        else confidence = 0.7;
-        return { ...c, confidence };
-      });
-      scored.sort((a, b) => b.confidence - a.confidence);
+      // 1b. 複数 ILIKE ヒット → 曖昧として候補提示モードへ
+      if (!matched && ilikeCandidates.length > 1) {
+        // 確度スコア: 完全一致(1.0) > 前方一致(0.9) > 含む(0.7)
+        const query = item.name.trim().toLowerCase();
+        const scored = ilikeCandidates.map((c) => {
+          const name = (c.name as string).toLowerCase();
+          let confidence: number;
+          if (name === query) confidence = 1.0;
+          else if (name.startsWith(query)) confidence = 0.9;
+          else confidence = 0.7;
+          return { ...c, confidence };
+        });
+        scored.sort((a, b) => b.confidence - a.confidence);
 
-      // 各候補の active unit + 持出状態を一括取得
-      const candidateIds = scored.map((c) => c.id);
-      const { data: candidateUnits } = await supabase
+        // 各候補の active unit + 持出状態を一括取得
+        const candidateIds = scored.map((c) => c.id);
+        const { data: candidateUnits } = await supabase
+          .from("individual_units")
+          .select("id, item_id, unit_number")
+          .in("item_id", candidateIds)
+          .eq("is_active", true)
+          .order("unit_number", { ascending: true });
+
+        const outMap = await fetchCurrentlyOutByItems(supabase, candidateIds);
+        const holderNameMap = await fetchHolderNames(
+          Array.from(outMap.values())
+            .map((v) => v.holderId)
+            .filter((id): id is string => !!id),
+        );
+
+        const unitsByItem = new Map<string, Array<{ id: string; unit_number: number }>>();
+        for (const u of candidateUnits ?? []) {
+          const itemId = u.item_id as string;
+          const list = unitsByItem.get(itemId) ?? [];
+          list.push({ id: u.id as string, unit_number: u.unit_number as number });
+          unitsByItem.set(itemId, list);
+        }
+
+        return {
+          extractedName: item.name,
+          matchedName: null,
+          matchedItemId: null,
+          trackingType: item.trackingType,
+          unitResolutions: [],
+          availableUnits: [],
+          availableUnitDetails: [],
+          quantity: item.quantity,
+          confidence: item.confidence,
+          status: "candidates_proposed",
+          candidates: scored.slice(0, 5).map((c) => {
+            const rawUnits = unitsByItem.get(c.id) ?? [];
+            const details = buildUnitDetails(rawUnits, outMap, holderNameMap);
+            return {
+              itemId: c.id,
+              name: c.name,
+              trackingType: (c.tracking_type as "individual" | "quantity") ?? "individual",
+              confidence: c.confidence,
+              availableUnits: details.map((d) => d.unitNumber),
+              availableUnitDetails: details,
+            };
+          }),
+        };
+      }
+
+      if (!matched) {
+        return {
+          extractedName: item.name,
+          matchedName: null,
+          matchedItemId: null,
+          trackingType: item.trackingType,
+          unitResolutions: item.unitNumbers.map((n) => ({
+            unitNumber: n,
+            unitId: null,
+            exists: false,
+            currentHolderId: null,
+            currentHolderName: null,
+          })),
+          availableUnits: [],
+          availableUnitDetails: [],
+          quantity: item.quantity,
+          confidence: item.confidence,
+          status: "not_found",
+          candidates: [],
+        };
+      }
+
+      // 2. 該当工具の全個体番号 + 持出状態を取得（候補表示用）
+      const { data: allUnits } = await supabase
         .from("individual_units")
-        .select("id, item_id, unit_number")
-        .in("item_id", candidateIds)
+        .select("id, unit_number")
+        .eq("item_id", matched.id)
         .eq("is_active", true)
         .order("unit_number", { ascending: true });
 
-      const outMap = await fetchCurrentlyOutByItems(supabase, candidateIds);
+      const rawUnits = (allUnits ?? []).map((u) => ({
+        id: u.id as string,
+        unit_number: u.unit_number as number,
+      }));
+      const outMap = await fetchCurrentlyOutByItems(supabase, [matched.id]);
       const holderNameMap = await fetchHolderNames(
         Array.from(outMap.values())
           .map((v) => v.holderId)
           .filter((id): id is string => !!id),
       );
+      const availableUnitDetails = buildUnitDetails(rawUnits, outMap, holderNameMap);
+      const availableUnits = availableUnitDetails.map((u) => u.unitNumber);
 
-      const unitsByItem = new Map<string, Array<{ id: string; unit_number: number }>>();
-      for (const u of candidateUnits ?? []) {
-        const itemId = u.item_id as string;
-        const list = unitsByItem.get(itemId) ?? [];
-        list.push({ id: u.id as string, unit_number: u.unit_number as number });
-        unitsByItem.set(itemId, list);
-      }
-
-      resolved.push({
-        extractedName: item.name,
-        matchedName: null,
-        matchedItemId: null,
-        trackingType: item.trackingType,
-        unitResolutions: [],
-        availableUnits: [],
-        availableUnitDetails: [],
-        quantity: item.quantity,
-        confidence: item.confidence,
-        status: "candidates_proposed",
-        candidates: scored.slice(0, 5).map((c) => {
-          const rawUnits = unitsByItem.get(c.id) ?? [];
-          const details = buildUnitDetails(rawUnits, outMap, holderNameMap);
-          return {
-            itemId: c.id,
-            name: c.name,
-            trackingType: (c.tracking_type as "individual" | "quantity") ?? "individual",
-            confidence: c.confidence,
-            availableUnits: details.map((d) => d.unitNumber),
-            availableUnitDetails: details,
-          };
-        }),
+      // 3. 指定番号の存在チェック + 持出中チェック
+      const detailByNumber = new Map(availableUnitDetails.map((d) => [d.unitNumber, d]));
+      const unitResolutions = item.unitNumbers.map((num) => {
+        const d = detailByNumber.get(num);
+        return {
+          unitNumber: num,
+          unitId: d?.unitId ?? null,
+          exists: !!d,
+          currentHolderId: d?.currentHolderId ?? null,
+          currentHolderName: d?.currentHolderName ?? null,
+        };
       });
-      continue;
-    }
 
-    if (!matched) {
-      resolved.push({
-        extractedName: item.name,
-        matchedName: null,
-        matchedItemId: null,
-        trackingType: item.trackingType,
-        unitResolutions: item.unitNumbers.map((n) => ({
-          unitNumber: n,
-          unitId: null,
-          exists: false,
-          currentHolderId: null,
-          currentHolderName: null,
-        })),
-        availableUnits: [],
-        availableUnitDetails: [],
-        quantity: item.quantity,
-        confidence: item.confidence,
-        status: "not_found",
-        candidates: [],
-      });
-      continue;
-    }
+      const hasUnitMissing = unitResolutions.some((r) => !r.exists);
+      const hasUnitAlreadyOut = unitResolutions.some((r) => r.exists && r.currentHolderId);
+      // 番号必須かはマスタの tracking_type だけで判定する。LLM 抽出の trackingType が
+      // 誤判定でも、quantity マスタなら番号なしで matched 扱いにする。
+      const isIndividualNoUnit =
+        matched.tracking_type === "individual" && item.unitNumbers.length === 0;
 
-    // 2. 該当工具の全個体番号 + 持出状態を取得（候補表示用）
-    const { data: allUnits } = await supabase
-      .from("individual_units")
-      .select("id, unit_number")
-      .eq("item_id", matched.id)
-      .eq("is_active", true)
-      .order("unit_number", { ascending: true });
-
-    const rawUnits = (allUnits ?? []).map((u) => ({
-      id: u.id as string,
-      unit_number: u.unit_number as number,
-    }));
-    const outMap = await fetchCurrentlyOutByItems(supabase, [matched.id]);
-    const holderNameMap = await fetchHolderNames(
-      Array.from(outMap.values())
-        .map((v) => v.holderId)
-        .filter((id): id is string => !!id),
-    );
-    const availableUnitDetails = buildUnitDetails(rawUnits, outMap, holderNameMap);
-    const availableUnits = availableUnitDetails.map((u) => u.unitNumber);
-    const unitMap = new Map(availableUnitDetails.map((u) => [u.unitNumber, u.unitId]));
-
-    // 3. 指定番号の存在チェック + 持出中チェック
-    const detailByNumber = new Map(availableUnitDetails.map((d) => [d.unitNumber, d]));
-    const unitResolutions = item.unitNumbers.map((num) => {
-      const d = detailByNumber.get(num);
       return {
-        unitNumber: num,
-        unitId: d?.unitId ?? null,
-        exists: !!d,
-        currentHolderId: d?.currentHolderId ?? null,
-        currentHolderName: d?.currentHolderName ?? null,
+        extractedName: item.name,
+        matchedName: matched.name as string,
+        matchedItemId: matched.id as string,
+        trackingType: (matched.tracking_type as "individual" | "quantity") ?? item.trackingType,
+        unitResolutions,
+        availableUnits,
+        availableUnitDetails,
+        quantity: item.quantity,
+        confidence: item.confidence,
+        status: hasUnitMissing
+          ? "unit_missing"
+          : hasUnitAlreadyOut
+            ? "unit_already_out"
+            : isIndividualNoUnit
+              ? "no_unit_specified"
+              : "matched",
+        candidates: [],
       };
-    });
+    },
+  );
 
-    const hasUnitMissing = unitResolutions.some((r) => !r.exists);
-    const hasUnitAlreadyOut = unitResolutions.some((r) => r.exists && r.currentHolderId);
-    // 番号必須かはマスタの tracking_type だけで判定する。LLM 抽出の trackingType が
-    // 誤判定でも、quantity マスタなら番号なしで matched 扱いにする。
-    const isIndividualNoUnit =
-      matched.tracking_type === "individual" && item.unitNumbers.length === 0;
-
-    resolved.push({
-      extractedName: item.name,
-      matchedName: matched.name as string,
-      matchedItemId: matched.id as string,
-      trackingType: (matched.tracking_type as "individual" | "quantity") ?? item.trackingType,
-      unitResolutions,
-      availableUnits,
-      availableUnitDetails,
-      quantity: item.quantity,
-      confidence: item.confidence,
-      status: hasUnitMissing
-        ? "unit_missing"
-        : hasUnitAlreadyOut
-          ? "unit_already_out"
-          : isIndividualNoUnit
-            ? "no_unit_specified"
-            : "matched",
-      candidates: [],
-    });
+  // alias use_count を遅延集計で適用（同一 alias の重複出現は加算回数を合算 → 直列時と同一）。
+  const aliasIncByCount = new Map<string, { base: number; n: number }>();
+  for (const a of aliasHits) {
+    const cur = aliasIncByCount.get(a.id);
+    if (cur) cur.n += 1;
+    else aliasIncByCount.set(a.id, { base: a.useCount, n: 1 });
   }
+  await Promise.all(
+    Array.from(aliasIncByCount.entries()).map(([id, { base, n }]) =>
+      supabase
+        .from("item_name_aliases")
+        .update({ use_count: base + n, last_used_at: new Date().toISOString() })
+        .eq("id", id),
+    ),
+  );
 
   // ── Layer C: not_found のアイテムに LLM 類似度マッチング ──
   await augmentNotFoundWithCandidates(resolved, supabase);
@@ -816,8 +857,10 @@ export async function extractAction(naturalText: string): Promise<{
     // マスタ照合と案件解決まで通す。
     const { extractFromNaturalText } = await import("@/lib/llm/router");
     const demo = await extractFromNaturalText(naturalText);
-    const demoResolved = await resolveAgainstMaster(demo.extraction);
-    const demoProject = await resolveProjectFromSite(demo.extraction.site);
+    const [demoResolved, demoProject] = await Promise.all([
+      resolveAgainstMaster(demo.extraction),
+      resolveProjectFromSite(demo.extraction.site),
+    ]);
     return {
       extraction: demo.extraction,
       signal: determineSignalWithResolution(demo.extraction, demoResolved),
@@ -864,10 +907,11 @@ export async function extractAction(naturalText: string): Promise<{
 
   const extraction = result.data;
 
-  // マスタ照合: 正式名称 + 番号存在を事前解決
-  const resolved = await resolveAgainstMaster(extraction);
-  // 案件照合: 本番 public.projects と部分一致
-  const resolvedProject = await resolveProjectFromSite(extraction.site);
+  // マスタ照合 + 案件照合は互いに独立 → 並列実行（直列待ちを解消）。
+  const [resolved, resolvedProject] = await Promise.all([
+    resolveAgainstMaster(extraction),
+    resolveProjectFromSite(extraction.site),
+  ]);
   const signal = determineSignalWithResolution(extraction, resolved);
 
   return { extraction, signal, resolved, resolvedProject };
@@ -1074,8 +1118,11 @@ export async function clarifyAction(
   }
 
   const extraction = validationResult.data;
-  const resolved = await resolveAgainstMaster(extraction);
-  const resolvedProject = await resolveProjectFromSite(extraction.site);
+  // マスタ照合 + 案件照合を並列実行。
+  const [resolved, resolvedProject] = await Promise.all([
+    resolveAgainstMaster(extraction),
+    resolveProjectFromSite(extraction.site),
+  ]);
   const signal = determineSignalWithResolution(extraction, resolved);
 
   return { extraction, signal, resolved, resolvedProject, summary };
