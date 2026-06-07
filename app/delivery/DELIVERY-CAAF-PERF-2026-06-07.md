@@ -43,5 +43,9 @@ read 解決のみの変更。`confirmCheckoutAction`（write/INSERT/append-only/
 ## opt-in/opt-out 判定（§7.5）
 - **opt-in（`human-review-needed`）**: LIVE 経路（実利用される core 解決）の変更。behavior 等価だが runtime 未実測のため、preview 確認を経て merge する安全側に倒す。
 
+## 追補（Copilot review #19 対応）
+1. **同時実行の上限化**: 上限なし `Promise.all` は items 数次第で DB 同時接続が膨らむため、`mapLimit(items, RESOLVE_CONCURRENCY=6, fn)`（順序保持）に変更。typical 入力（数件）は全並列、巨大入力でも 6 並列に抑制。
+2. **alias use_count の race 解消**: 並列内の read-then-write race（同名 alias の重複出現で undercount）を排除。alias ヒットを並列中に in-memory 収集（JS push は race-free）し、並列完了後に id 単位で加算回数を合算して 1 回ずつ UPDATE → 直列時と同一の決定論的加算。
+
 ## 体制事後評価
-M2 妥当。LIVE コードの behavior-preserving 性能改善は独立検証（`git diff -w` 等価照合）が有効に機能。L2 閾値未接近。
+M2 妥当。LIVE コードの behavior-preserving 性能改善は独立検証（`git diff -w` 等価照合）が有効に機能。Copilot の LIVE 信頼性 2 指摘（unbounded 並列 / alias race）も同 PR 内で解消。L2 閾値未接近。

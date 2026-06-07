@@ -22,7 +22,7 @@
 |---|---|---|---|
 | A | 出力等価 | PASS | `Promise.all(items.map(...))` は入力順を保持 ⇒ `resolved[i]` は `items[i]` の解決で push 順と同一。3 分岐が返すオブジェクトは元の push 対象とフィールド完全一致（-w diff で本文不変を確認）。 |
 | B | 取りこぼし無し | PASS | `resolveAgainstMaster` 内に `resolved.push` 残存ゼロ（-w diff で 3 件全て return 化）。stray `continue` ゼロ（残る continue は `augmentNotFoundWithCandidates`/`confirmCheckoutAction` の既存ループ、本変更対象外）。typecheck PASS = ループ外 continue 無し。 |
-| C | 並行安全 | PASS | item 間で共有可変状態なし（各 item が独自 ResolvedItem を生成）。alias `use_count` UPDATE は同名重複時のみ楽観的 race（analytics のみ、correctness 無影響、SPEC「並行 INSERT は楽観的並行制御で OK」と整合）。 |
+| C | 並行安全 | PASS | item 間で共有可変状態なし。**alias `use_count` 加算は並列完了後に遅延集計**（Copilot #19 対応）→ DB read-then-write race を排除し、同名重複も加算回数を合算して直列時と同一。同時実行は `mapLimit`(=6) で上限化（unbounded DB traffic を防止）。 |
 | D | 案件並列の独立性 | PASS | `resolveProjectFromSite`（`extraction.site` のみ参照、独自 public/tools client）と `resolveAgainstMaster`（`extraction.items` のみ参照）は共有状態なし。`signal` 計算は両解決後で順序不変。 |
 | E | Don't 非接触 | PASS | 変更は read 解決のみ。`confirmCheckoutAction`（write/INSERT/append-only/D-7/D-11）は無変更。罠A/D-3/D-5 非接触。 |
 | F | NUL バイト | 既存 | working tree と origin/master ともに NUL=1（本変更由来でない既存アーティファクト）。 |

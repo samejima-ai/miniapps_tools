@@ -562,6 +562,28 @@ function buildUnitDetails(
   });
 }
 
+/** 上限つき並列 map（順序保持）。LIVE 経路で DB 同時接続が膨らむのを防ぐ。 */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++; // JS は単一スレッド → cursor++ はアトミック（worker 間で番号重複しない）
+      results[i] = await fn(items[i] as T, i);
+    }
+  }
+  const n = Math.min(Math.max(1, limit), items.length || 1);
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return results;
+}
+
+/** item 解決の最大同時実行数（DB 同時接続の上限。typical 入力は数件で全並列）。 */
+const RESOLVE_CONCURRENCY = 6;
+
 /**
  * LLM 抽出結果をマスタ DB と照合し、正式名称・番号存在を解決する。
  * 確認カード表示前に呼ぶことで、人間の入力ミスを確定前に補完・警告。
@@ -569,9 +591,15 @@ function buildUnitDetails(
 async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<ResolvedItem[]> {
   const supabase = await createServerSupabaseClient();
 
-  // 各 item の解決は独立 → 並列化して N+1 直列待ちを解消（出力順は map が保持）。
-  const resolved: ResolvedItem[] = await Promise.all(
-    extraction.items.map(async (item): Promise<ResolvedItem> => {
+  // alias use_count の加算は、並列の read-then-write race を避けるため遅延集計する。
+  const aliasHits: Array<{ id: string; useCount: number }> = [];
+
+  // 各 item の解決は独立 → 上限つき並列で N+1 直列待ちを解消（出力順は保持）。
+  // 上限なし Promise.all は items 数次第で DB 同時接続が膨らむため mapLimit で抑える。
+  const resolved: ResolvedItem[] = await mapLimit(
+    extraction.items,
+    RESOLVE_CONCURRENCY,
+    async (item): Promise<ResolvedItem> => {
       // 0. エイリアス検索（学習済みマッピング → ILIKE より優先）
       let matched: { id: string; name: string; tracking_type: string } | undefined;
 
@@ -592,14 +620,12 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
           .single();
         if (aliasItem) {
           matched = aliasItem as typeof matched;
-          // エイリアスが照合で実際に使われた → use_count++ (確定前でもカウント)
-          await supabase
-            .from("item_name_aliases")
-            .update({
-              use_count: (aliasHit[0].use_count as number) + 1,
-              last_used_at: new Date().toISOString(),
-            })
-            .eq("id", aliasHit[0].id);
+          // 使用された alias を記録（実際の use_count++ は並列完了後にまとめて適用）。
+          // ※ 配列 push は単一スレッドで race しない（DB の read-then-write race を回避）。
+          aliasHits.push({
+            id: aliasHit[0].id as string,
+            useCount: aliasHit[0].use_count as number,
+          });
         }
       }
 
@@ -769,7 +795,23 @@ async function resolveAgainstMaster(extraction: CaaFExtractionResult): Promise<R
               : "matched",
         candidates: [],
       };
-    }),
+    },
+  );
+
+  // alias use_count を遅延集計で適用（同一 alias の重複出現は加算回数を合算 → 直列時と同一）。
+  const aliasIncByCount = new Map<string, { base: number; n: number }>();
+  for (const a of aliasHits) {
+    const cur = aliasIncByCount.get(a.id);
+    if (cur) cur.n += 1;
+    else aliasIncByCount.set(a.id, { base: a.useCount, n: 1 });
+  }
+  await Promise.all(
+    Array.from(aliasIncByCount.entries()).map(([id, { base, n }]) =>
+      supabase
+        .from("item_name_aliases")
+        .update({ use_count: base + n, last_used_at: new Date().toISOString() })
+        .eq("id", id),
+    ),
   );
 
   // ── Layer C: not_found のアイテムに LLM 類似度マッチング ──
