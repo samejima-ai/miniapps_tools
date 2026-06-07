@@ -12,3 +12,14 @@
 
 export { buildExtractionPrompt, parseExtraction } from "./extractor";
 export { buildIntentPrompt, parseIntentResponse } from "./intent";
+
+// 工具ドメイン: フィールド契約 + 純粋な write 写像（M-C）
+export { TOOLS_FIELD, TOOLS_FIELDS } from "./tools-fields";
+export {
+  buildMovementRows,
+  recordToMovementInput,
+  type ToolsAction,
+  type ToolsMovementInput,
+  type ResolvedUnit,
+  type MovementRow,
+} from "./tools-mapping";
